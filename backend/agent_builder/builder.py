@@ -10,6 +10,7 @@
 #
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Awaitable, Callable, Optional, Union
 
@@ -24,10 +25,18 @@ from .validation import validate_agent
 TransitionHook = Callable[[str, str, str, dict], Awaitable[None]]
 
 
+def _raise_if_invalid(data: dict) -> None:
+    errors = [i.message for i in validate_agent(data) if i.severity == "error"]
+    if errors:
+        raise ValueError("Invalid agent: " + " ".join(errors))
+
+
 class AgentBuilder:
     """Builds a runnable Pipecat Flows graph from a declarative AgentConfig."""
 
     def __init__(self, config: AgentConfig, on_transition: Optional[TransitionHook] = None):
+        # Every way of creating a builder validates, so nothing unrunnable compiles.
+        _raise_if_invalid(asdict(config))
         self.config = config
         self.on_transition = on_transition
         self._nodes_by_name = {n.name: n for n in config.nodes}
@@ -35,11 +44,9 @@ class AgentBuilder:
     # ---- loading -----------------------------------------------------------
     @classmethod
     def from_dict(cls, data: dict) -> "AgentBuilder":
-        # Validate the raw dict first so malformed input gives a readable error
-        # instead of a KeyError from the dataclass constructors.
-        errors = [i.message for i in validate_agent(data) if i.severity == "error"]
-        if errors:
-            raise ValueError("Invalid agent: " + " ".join(errors))
+        # Validate the raw dict too, so malformed input (e.g. a missing key) gives a
+        # readable error instead of a KeyError from the dataclass constructors.
+        _raise_if_invalid(data)
         return cls(AgentConfig.from_dict(data))
 
     @classmethod
