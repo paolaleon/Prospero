@@ -15,9 +15,10 @@ This file records the architectural decisions (ADs) built into the project so fa
 | AD-1 | The canvas layout is stored in the agent JSON |
 | AD-2 | Validation rules live in one place, in the backend |
 | AD-3 | `AgentBuilder` reports transitions through a callback |
-| AD-4 | Agents are stored as JSON files on disk |
+| AD-4 | Agents are stored as immutable versions in JSON files |
 | AD-5 | A test call carries the agent definition with it |
 | AD-6 | Live call state reaches the browser over RTVI |
+| AD-7 | Every call is recorded with the agent it ran |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -95,32 +96,46 @@ The **Gaps to prepare for** section at the end isn't a set of decisions. It list
 
 ---
 
-## AD-4: Agents are stored as JSON files on disk
+## AD-4: Agents are stored as immutable versions in JSON files
 
-**Decision.** Each agent is `backend/agents/{id}.json`, accessed through `/api/agents`. Writes go to a temporary file that then replaces the original, so a crash can't leave a half-written agent.
+**Decision.** A save never overwrites. Each one appends `backend/agents/{id}/versions/{n}.json`, which holds the agent plus `version`, `created_at`, a `message` and a `source` (`human`, `copilot` or `restore`). The latest version is the current agent. Rolling back appends a copy of an old version rather than deleting anything. A save sends the `base_version` it started from, and if someone saved in between, it's refused with `409`. All storage lives in `backend/store.py`, and `/api/agents` and `/api/agents/{id}/versions` sit on top of it.
 
-**Product argument.** Nothing to set up or run. Agents can be diffed, reviewed in a pull request and committed, which treats the agent as code. It's the same format the builder runs and the copilot will generate.
+**Product argument.**
+- Nothing to set up or run.
+- Agents can be diffed, reviewed in a pull request and committed, which treats the agent as code.
+- Users get history and one-click rollback.
+- A stale editor tab can't silently overwrite newer work.
 
-**AI angle.** Versioning becomes important once an LLM is editing agents. Plain JSON files give a cheap path to that: git history, or a timestamped snapshot on each save.
+**AI angle.** This decision exists for the copilot.
+- **Every AI edit is reviewable and reversible.** A copilot change becomes a version tagged `source: "copilot"` with a message explaining it ("Shortened the greeting after 3 callers hung up"). It can be compared with the previous version and undone in one step. Users won't let an AI edit their production agent without that.
+- **Calls point at exact versions** (AD-7). "Version 4 fixed the drop-off seen in version 3" is a claim the data can back up, which is the basis for measuring whether an iteration helped.
 
 **Alternatives considered.**
+- One mutable file per agent (the previous form of this decision). Replaced because it had no history, no rollback and no protection against stale writes.
+- Using git itself as the version store. Rejected because it ties the product to a repository on disk and is awkward to expose through an API.
 - SQLite or Postgres. Rejected for now: it's infrastructure the challenge doesn't need yet.
-- Keeping agents only in browser storage. Rejected because the backend has to be able to load saved agents.
+- A draft and publish workflow (like Retell's). Deferred: every save is a version for now. A "published" pointer for production traffic can be added later without changing the storage.
 
-**Cost of reversal.** Low. Storage sits behind `/api/agents`, so moving to a database changes only `api.py`, not the frontend.
+**Cost of reversal.** Low. All storage is in `store.py`, so moving to a database changes one module, not the API or the frontend.
 
 **Likely challenges.**
-- *"There's no version history in the product."* **This is the weakest point once the copilot exists.** Users need to see what the AI changed and undo it. Plan: store each save as a snapshot, and show the copilot's edits as a diff the user accepts or rejects.
-- *"Two people saving at once will overwrite each other."* True, and fine for a single-user tool. The fix is a version check on save that rejects a stale write.
+- *"Every save keeps a full copy. Won't that grow without limit?"* An agent is a few KB, so thousands of versions are a few MB. Diffs between versions are computed on demand rather than stored.
 - *"There are no tenants, no sign-in, no permissions."* Out of scope for Phase 1. It would come with the move to a database.
+- *"Deleting an agent deletes its history."* True, and deliberate for a dev tool. A production system would archive instead.
 
-**Revisit when** you add the copilot (versioning), more than one user (version checks on save), or a hosted deployment (a database and tenants).
+**Revisit when** you need to tell production traffic apart from work in progress (add a published pointer), or you host it for more than one team (database and tenants).
 
 ---
 
 ## AD-5: A test call carries the agent definition with it
 
-**Decision.** The `/start` request body decides which agent a call runs, in this order: an inline `agent`, then a saved `agent_id`, then `AGENT_FLOW`. The editor sends the current draft, saved or not. A middleware (`StartValidationMiddleware` in `api.py`) checks that agent before the runner creates a session: an agent with errors is refused with `422` and its issues, and an unknown `agent_id` gets `404`.
+**Decision.** The `/start` request body decides which agent a call runs (`store.resolve_call_agent`), in this order:
+
+1. An inline `agent`: an unsaved draft. The editor also sends the `agent_id` it's a draft of, so the call record (AD-7) is linked to that agent, with `agent_version` set to `null`.
+2. A saved `agent_id`, at a given `version` or the latest.
+3. Neither: `AGENT_FLOW`.
+
+The editor sends the current draft, saved or not. A middleware (`StartValidationMiddleware` in `api.py`) checks that agent before the runner creates a session: an agent with errors is refused with `422` and its issues, and an unknown `agent_id` gets `404`.
 
 **Product argument.** This is the iteration loop that matters most for a voice-agent builder: change a prompt, then call within seconds, with no save, deploy or restart. Each call is independent, so you could compare two versions of an agent side by side.
 
@@ -130,7 +145,7 @@ The **Gaps to prepare for** section at the end isn't a set of decisions. It list
 - Saving before every call and running only saved agents. Rejected because it's slower and fills the store with half-finished agents.
 - Restarting the bot with a new `AGENT_FLOW` (the original setup). Rejected because it's far too slow.
 
-**Cost of reversal.** Low. Allowing only `agent_id` is a one-line change in `_builder_for`.
+**Cost of reversal.** Low. Allowing only saved versions is a one-line change in `store.resolve_call_agent`.
 
 **Likely challenges.**
 - *"Anyone who can reach the backend can run any prompt on your OpenAI and ElevenLabs keys."* **This is the main security and cost risk.** Acceptable for a local tool. In production, require sign-in, run only saved and validated versions, and rate-limit calls and minutes per user.
@@ -158,11 +173,45 @@ The **Gaps to prepare for** section at the end isn't a set of decisions. It list
 **Cost of reversal.** Medium. The frontend will depend on the message format.
 
 **Likely challenges.**
-- *"Nothing is stored when the call ends: no history, no replay."* True. That's the obvious next step: write the same events to a call log (see Gaps).
+- *"Nothing is stored when the call ends."* It is: the same transitions are written to the call record (AD-7). RTVI is only the live view.
 - *"It sends patient data (names, reasons for visit) to the browser."* **This is a healthcare compliance point.** For a local test tool, the person testing is the caller. In production, transcripts and collected fields are protected health information: they need encryption, retention limits and access controls, and may need masking in shared views.
 - *"It only works with Pipecat clients."* True, and acceptable because the editor is a Pipecat client. Telephony calls wouldn't get the live view, but they would get call logs.
 
-**Revisit when** you add call logs, phone calls, or real patient traffic.
+**Revisit when** you add phone calls or real patient traffic.
+
+---
+
+## AD-7: Every call is recorded with the agent it ran
+
+**Decision.** `bot.py` records each call on the server (`CallRecorder`) and writes it to `backend/calls/{id}.json` when the call ends, whether the agent hung up or the caller did. The record is self-contained:
+- **Agent:** a snapshot of the agent it ran, plus `agent_id` and `agent_version` (`null` for an unsaved draft).
+- **Timeline:** user turns, agent turns (marked if interrupted) and transitions (with their arguments).
+- **Outcome:** `final_node`, the merged `collected` data, and `ended_by` (`agent` if it finished on an end node, otherwise `caller`).
+- **Source:** `test`, `production` or `mock`.
+
+Records are read through `/api/calls`. The client is told the call id when it connects (an RTVI `call.started` message). The `calls/` folder is gitignored.
+
+**Product argument.** Every test call becomes something you can come back to. Users can replay what happened, see where callers dropped off (`ended_by: caller` before an end node), and compare calls across versions. Recording on the server, not in the browser, means production calls get recorded in exactly the same format even though they never pass through the editor.
+
+**AI angle.** This is the copilot's raw material for the "production iteration" workflow.
+- **Calls are evidence tied to nodes.** Each turn falls between known transitions, so an issue ("the agent offered times before asking the reason for the visit") can be pinned to a node and edge. The copilot can then propose a targeted edit instead of rewriting the prompt.
+- **Snapshots keep evidence readable.** A call stays interpretable after the agent changes or nodes are renamed, because it carries the agent it ran. That's why node names can stay as identifiers without separate ids.
+- **Ready for issue detection.** An LLM pass over the records can flag likely problems (loops, drop-offs, wrong transitions, missing data) without anyone listening to calls. That's the "detection is a burden" part of the brief.
+- **Mock calls use the same format** (`source: "mock"`), so the copilot's loop can be shown without real call data.
+
+**Alternatives considered.**
+- Recording in the browser from the RTVI events. Rejected because production and phone calls never pass through the editor.
+- Storing only a reference to the agent version. Rejected because drafts have no version, and a call would become unreadable if a version were ever deleted.
+- Using Pipecat's audio recording. Deferred: text and structure are what the copilot reasons over. Audio can be added for tone and latency analysis.
+
+**Cost of reversal.** Medium. The copilot and the call-history views will depend on the record format.
+
+**Likely challenges.**
+- *"Transcripts of a healthcare line are protected health information."* Yes. That's why `calls/` is gitignored. In production it needs encryption, retention limits, access controls, and masking before anything goes to an LLM.
+- *"Turns have no audio timing or latency."* True. Timestamps are when each event was recorded, not when audio played. Latency analysis would need Pipecat's metrics added to the record.
+- *"A record is only written when the call ends."* If the process crashes mid-call, that call is lost. Acceptable for now. Appending events to the file as they happen would fix it.
+
+**Revisit when** you add real traffic (privacy controls), need latency or audio analysis, or call volume outgrows one folder of files (database).
 
 ---
 
@@ -170,8 +219,8 @@ The **Gaps to prepare for** section at the end isn't a set of decisions. It list
 
 These aren't decisions yet. They're the questions an AI product reviewer is most likely to ask.
 
-1. **Versioning and rollback.** Especially once the copilot edits agents: show a diff of each AI change, let the user accept or reject it, and keep a history to undo bad changes. (AD-4)
-2. **Call logs and evaluations.** Keep transcripts and node paths after a call. Then build scripted test conversations with expected paths ("a caller who wants to cancel should reach `cancel_confirm`") and run them after every prompt change to catch regressions. (AD-3, AD-6)
+1. **Reviewing AI edits.** Versions and rollback exist (AD-4). Still missing is a visual diff of a proposed change on the canvas, with accept and reject, before it becomes a version.
+2. **Evaluations.** Calls are recorded (AD-7). Still missing are scripted test conversations with expected paths ("a caller who wants to cancel should reach `cancel_confirm`"), run after every change to catch regressions. (AD-3, AD-7)
 3. **Routing reliability.** The LLM chooses an edge only from its description. There's no guard or fallback if it never calls a function, picks the wrong edge, or fills arguments badly. Options: global edges available from every node (such as "talk to a human"), a limit on turns per node, and enum checks on arguments. (AD-2, AD-3)
 4. **Running arbitrary prompts on shared keys.** Sign-in, rate limits and per-user quotas before anything is deployed. (AD-5)
-5. **Patient data in transcripts and collected fields.** Encryption, retention limits, access controls and masking before real traffic. (AD-6)
+5. **Patient data in transcripts and collected fields.** Encryption, retention limits, access controls and masking before real traffic. (AD-6, AD-7)
