@@ -19,6 +19,8 @@ This file records the architectural decisions (ADs) built into the project so fa
 | AD-5 | A test call carries the agent definition with it |
 | AD-6 | Live call state reaches the browser over RTVI |
 | AD-7 | Every call is recorded with the agent it ran |
+| AD-8 | The frontend and backend are separate apps that only communicate over HTTP |
+| AD-9 | Every edit to an agent is a named, serialisable operation |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -212,6 +214,58 @@ Records are read through `/api/calls`. The client is told the call id when it co
 - *"A record is only written when the call ends."* If the process crashes mid-call, that call is lost. Acceptable for now. Appending events to the file as they happen would fix it.
 
 **Revisit when** you add real traffic (privacy controls), need latency or audio analysis, or call volume outgrows one folder of files (database).
+
+---
+
+## AD-8: The frontend and backend are separate apps that only communicate over HTTP
+
+**Decision.** The editor lives in `frontend/` (React, TypeScript, React Flow) with its own dependencies, build and dev server. The backend serves JSON and the WebRTC call endpoints only, never UI files. The frontend finds the backend through one setting, `VITE_API_URL`. The Pipecat runner already allows cross-origin requests, so no backend changes were needed. The only contracts between the two are the HTTP API and the agent JSON format.
+
+**Product argument.** Each side can be built, deployed and changed without touching the other. The UI ships as static files to any host, and the voice backend scales with the number of calls, not with editor traffic.
+
+**AI angle.** Because the API is the only way in, the Phase 2 copilot gets the same capabilities a human has: it can run as a backend service, a CLI or an MCP tool and call `/api/agents`, `/api/validate` and `/api/calls` directly. Nothing the copilot needs is hidden inside the UI.
+
+**Alternatives considered.**
+- Having the backend serve the built frontend. Rejected because it ties backend releases to frontend builds.
+- A no-build page loading libraries from a CDN. Rejected because it's harder to maintain as the editor grows.
+- A full-stack framework such as Next.js. Rejected because the backend is Python, and a second server layer would add nothing.
+
+**Cost of reversal.** Low to medium. Serving `frontend/dist` from the backend would take a few lines, but undoing the separation would mean merging two release cycles.
+
+**Likely challenges.**
+- *"Two processes to run in development."* True. Each is one command: `npm run dev` in `frontend/` and `python bot.py` in `backend/`.
+- *"`allow_origins=*` is permissive."* True, and it's the runner's default. A deployment should restrict it to the editor's origin with the runner's `--allowed-origins` option.
+
+**Revisit when** the editor is deployed (restrict origins, add sign-in).
+
+---
+
+## AD-9: Every edit to an agent is a named, serialisable operation
+
+**Decision.** The editor's draft only changes through `applyOp(agent, op)` in `frontend/src/lib/operations.ts`. That function is pure and is the single place where an agent is modified. An `Op` is plain data: `addNode`, `renameNode`, `updateEdge`, `moveNodes` and so on, each with a readable label from `describeOp`. The canvas, the inspector, JSON import and undo/redo all dispatch operations through the store (`frontend/src/lib/store.ts`). Operations whose meaning spans the graph handle every reference: renaming a node rewrites the start node and every edge that targets it, and deleting a node keeps the transitions that pointed at it but clears their target, so validation flags each one.
+
+**Product argument.**
+- One undo/redo history, with readable labels, covers every kind of edit.
+- Typing in a field becomes a single undo step instead of one per keystroke.
+- No part of the UI can leave the graph inconsistent, for example a rename that breaks the edges pointing at a node.
+
+**AI angle.** This is how the copilot plugs into the editor.
+- **One vocabulary for people and the AI.** The copilot doesn't return a whole new JSON for the agent; it proposes a list of operations ("rename `offer_times` to `offer_slots`", "edit the description of `select_time`"). Small, targeted edits are easier for an LLM to get right than regenerating the whole document, and a reviewer can read them.
+- **Reviewable by construction.** A proposal is a list of labelled operations that can be previewed on the canvas, then accepted or rejected one by one. It becomes a version with `source: "copilot"` (AD-4).
+- **Safe to apply.** `applyOp` refuses operations that don't fit the agent (an unknown node, a name collision), so a hallucinated edit fails loudly instead of corrupting the graph. Validation (AD-2) then catches anything that's structurally wrong.
+
+**Alternatives considered.**
+- Letting each component edit the agent object directly. Rejected because there'd be no history, no labels, and nothing a copilot could share.
+- JSON Patch (RFC 6902). Rejected as the main vocabulary because paths like `/nodes/3/edges/1` mean nothing to a reviewer and break when nodes move. Patches could still be produced from operations if needed.
+- Having the copilot regenerate the whole agent JSON. Rejected because it costs more tokens, drifts unpredictably, and is hard to review.
+
+**Cost of reversal.** High once the copilot exists. Its tool definitions would be these operations.
+
+**Likely challenges.**
+- *"The operations only exist in the frontend, so the copilot can't use them from the backend."* True today. The backend stores whole versions. For a server-side copilot, port `applyOp` to Python (it's about 100 lines and the tests document its behaviour), or let the copilot return operations that the editor applies.
+- *"Undo history is lost on reload."* True. It's per session. Versions (AD-4) are the long-term history.
+
+**Revisit when** you build the copilot's tool interface (decide where `applyOp` runs), or need edits from several people at once (operations are the basis for merging).
 
 ---
 
