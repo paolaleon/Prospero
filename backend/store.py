@@ -1,20 +1,24 @@
 #
-# Store — agents, as immutable versions in JSON files.
+# Store — agents (as immutable versions) and call records, as JSON files.
 #
 #   agents/{agent_id}/versions/0001.json   {"version", "created_at", "message", "source", "agent"}
+#   calls/{call_id}.json                   one record per call (see save_call)
 #
-# A save never overwrites: it appends a version. That gives rollback, and every
-# change (by a person or a copilot) stays reviewable and reversible.
+# A save never overwrites: it appends a version. That gives rollback, and lets a
+# call record point at the exact agent version it ran on, which is what makes
+# calls usable as evidence when iterating on an agent (by a person or a copilot).
 #
 
 import json
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 BACKEND_DIR = Path(__file__).parent
 AGENTS_DIR = BACKEND_DIR / "agents"
+CALLS_DIR = BACKEND_DIR / "calls"
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 VERSION_SOURCES = {"human", "copilot", "restore"}
@@ -159,3 +163,56 @@ def resolve_call_agent(body: dict) -> tuple[Optional[dict], Optional[str], Optio
         return record["agent"], agent_id, record["version"]
     return None, None, None
 
+
+# ---- calls --------------------------------------------------------------------
+def new_call_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def save_call(record: dict) -> None:
+    """Persist one call. A record is self-contained: it carries the snapshot of
+    the agent it ran, so it stays readable after the agent changes.
+
+    {
+      "id", "source": "test" | "production" | "mock",
+      "agent_id", "agent_version" (None for an unsaved draft), "agent",
+      "started_at", "ended_at", "ended_by": "agent" | "caller",
+      "final_node", "collected": {...},
+      "events": [
+        {"t", "type": "transition", "from_node", "function", "to_node", "args"},
+        {"t", "type": "user", "text"},
+        {"t", "type": "agent", "text", "interrupted"},
+      ]
+    }
+    """
+    _write_json(CALLS_DIR / f"{_check_id(record['id'])}.json", record)
+
+
+def get_call(call_id: str) -> dict:
+    path = CALLS_DIR / f"{_check_id(call_id)}.json"
+    if not path.exists():
+        raise NotFound(f"Call '{call_id}' not found.")
+    return json.loads(path.read_text())
+
+
+def list_calls(agent_id: Optional[str] = None) -> list[dict]:
+    """Call summaries, newest first."""
+    CALLS_DIR.mkdir(exist_ok=True)
+    out = []
+    for p in CALLS_DIR.glob("*.json"):
+        call = json.loads(p.read_text())
+        if agent_id and call.get("agent_id") != agent_id:
+            continue
+        out.append({
+            "id": call["id"],
+            "source": call.get("source"),
+            "agent_id": call.get("agent_id"),
+            "agent_name": (call.get("agent") or {}).get("name"),
+            "agent_version": call.get("agent_version"),
+            "started_at": call.get("started_at"),
+            "ended_at": call.get("ended_at"),
+            "ended_by": call.get("ended_by"),
+            "final_node": call.get("final_node"),
+            "turns": sum(1 for e in call.get("events", []) if e["type"] in ("user", "agent")),
+        })
+    return sorted(out, key=lambda c: c["started_at"] or "", reverse=True)

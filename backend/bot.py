@@ -16,6 +16,8 @@
 #
 # During a call, every node change is pushed to the client as an RTVI server
 # message, so the editor can highlight where the conversation is in the graph.
+# When the call ends, it is recorded (transcript, node path, collected data and
+# the agent it ran) in backend/calls/, as material for iterating on the agent.
 #
 # Run:  python bot.py   (editor API on http://localhost:7860/api, test client at /client)
 #
@@ -61,13 +63,52 @@ transport_params = {
 }
 
 
+class CallRecorder:
+    """Collects one call's timeline and writes it to the store when the call ends."""
+
+    def __init__(self, agent: dict, agent_id, version, source: str):
+        self.record = {
+            "id": store.new_call_id(),
+            "source": source,
+            "agent_id": agent_id,
+            "agent_version": version,
+            "agent": agent,
+            "started_at": store.now(),
+            "ended_at": None,
+            "ended_by": None,
+            "final_node": agent["initial_node"],
+            "collected": {},
+            "events": [],
+        }
+
+    @property
+    def call_id(self) -> str:
+        return self.record["id"]
+
+    def add(self, type: str, **fields) -> None:
+        self.record["events"].append({"t": store.now(), "type": type, **fields})
+
+    def transition(self, from_node: str, function: str, to_node: str, args: dict) -> None:
+        self.add("transition", from_node=from_node, function=function, to_node=to_node, args=args)
+        self.record["final_node"] = to_node
+        self.record["collected"].update(args)
+
+    def save(self) -> None:
+        end_nodes = {n["name"] for n in self.record["agent"]["nodes"] if n.get("end")}
+        self.record["ended_at"] = store.now()
+        self.record["ended_by"] = "agent" if self.record["final_node"] in end_nodes else "caller"
+        store.save_call(self.record)
+        logger.info(f"Recorded call {self.call_id} ({len(self.record['events'])} events)")
+
+
 async def run_bot(
     transport: BaseTransport,
     runner_args: RunnerArguments,
     builder: AgentBuilder,
+    recorder: CallRecorder,
 ) -> None:
     config = builder.config
-    logger.info(f"Starting '{config.name}' with {len(config.nodes)} nodes")
+    logger.info(f"Starting '{config.name}' with {len(config.nodes)} nodes (call {recorder.call_id})")
 
     stt = ElevenLabsRealtimeSTTService(api_key=os.environ["ELEVENLABS_API_KEY"])
     tts = ElevenLabsTTSService(
@@ -80,6 +121,7 @@ async def run_bot(
         await worker.rtvi.send_server_message({"type": "flow.node", "node": node, **extra})
 
     async def on_transition(from_node: str, function: str, to_node: str, args: dict) -> None:
+        recorder.transition(from_node, function, to_node, args)
         await notify_node(to_node, from_node=from_node, function=function, args=args)
 
     builder.on_transition = on_transition
@@ -115,8 +157,19 @@ async def run_bot(
         transport=transport,
     )
 
+    @context_aggregator.user().event_handler("on_user_turn_message_added")
+    async def on_user_message(aggregator, message):
+        if message.content:
+            recorder.add("user", text=message.content)
+
+    @context_aggregator.assistant().event_handler("on_assistant_turn_stopped")
+    async def on_assistant_turn(aggregator, message):
+        if message.content:
+            recorder.add("agent", text=message.content, interrupted=message.interrupted)
+
     @worker.rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):
+        await worker.rtvi.send_server_message({"type": "call.started", "call_id": recorder.call_id})
         await notify_node(config.initial_node)
 
     @transport.event_handler("on_client_connected")
@@ -131,18 +184,22 @@ async def run_bot(
 
     runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)
     await runner.add_workers(worker)
-    await runner.run()
+    try:
+        await runner.run()
+    finally:
+        recorder.save()
 
 
 async def bot(runner_args: RunnerArguments):
     """Entry point invoked by the Pipecat dev runner (and Pipecat Cloud)."""
     body = runner_args.body or {}
-    agent, _, _ = store.resolve_call_agent(body)
+    agent, agent_id, version = store.resolve_call_agent(body)
     if agent is None:
         agent = json.loads(AGENT_FLOW.read_text())
     builder = AgentBuilder.from_dict(agent)
+    recorder = CallRecorder(agent, agent_id, version, source=body.get("source", "test"))
     transport = await create_transport(runner_args, transport_params)
-    await run_bot(transport, runner_args, builder)
+    await run_bot(transport, runner_args, builder, recorder)
 
 
 if __name__ == "__main__":

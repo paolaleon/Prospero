@@ -8,6 +8,7 @@
 #   /api/agents[/{id}]                     list, create, read latest, save new version, delete
 #   /api/agents/{id}/versions[/{n}]        version history
 #   /api/agents/{id}/versions/{n}/restore  roll back (as a new version)
+#   /api/calls[/{id}]                      recorded calls
 #   /api/validate                          structured errors/warnings for a draft agent
 #   /api/voices                            ElevenLabs voices for the voice picker
 #
@@ -197,6 +198,18 @@ def register_routes(app: FastAPI) -> None:
         except (store.NotFound, ValueError) as e:
             raise _http_error(e)
         return _with_issues(agent_id, record)
+
+    # -- calls --
+    @app.get("/api/calls")
+    async def list_calls(agent_id: Optional[str] = None):
+        return store.list_calls(agent_id)
+
+    @app.get("/api/calls/{call_id}")
+    async def get_call(call_id: str):
+        try:
+            return store.get_call(call_id)
+        except (store.NotFound, ValueError) as e:
+            raise _http_error(e)
 
     # -- tools --
     @app.post("/api/validate")
