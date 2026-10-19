@@ -2,38 +2,33 @@
 # Editor API — the HTTP surface the agent editor (frontend/) talks to.
 #
 # Mounted onto the Pipecat dev runner's FastAPI app (see bot.py), so one backend
-# process serves the agent store and the WebRTC test-call endpoints. It serves
-# JSON only; the editor is a separate app.
+# process serves the store and the WebRTC test-call endpoints. It serves JSON
+# only; the editor is a separate app. Storage lives in store.py.
 #
-#   /api/agents[/{id}]   CRUD over agent JSON files in backend/agents/
-#   /api/validate        structured errors/warnings for a draft agent
-#   /api/voices          ElevenLabs voices for the voice picker
+#   /api/agents[/{id}]                     list, create, read latest, save new version, delete
+#   /api/agents/{id}/versions[/{n}]        version history
+#   /api/agents/{id}/versions/{n}/restore  roll back (as a new version)
+#   /api/validate                          structured errors/warnings for a draft agent
+#   /api/voices                            ElevenLabs voices for the voice picker
 #
 # It also checks the agent of every call request (POST /start) before the runner
 # accepts it, so an invalid draft is refused with its issues instead of the call
 # hanging after the bot fails to build.
 #
-# Agents are plain JSON files on purpose: they stay diffable, hand-editable and
-# exactly the format AgentBuilder consumes.
-#
 
 import json
 import os
-import re
 import time
-from datetime import datetime, timezone
-from pathlib import Path
+from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
+from pydantic import BaseModel
 
+import store
 from agent_builder import validate_agent
-
-AGENTS_DIR = Path(__file__).parent / "agents"
-
-ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 # Used when the ElevenLabs voices API is unreachable, so the picker still works.
 FALLBACK_VOICES = [
@@ -44,71 +39,45 @@ FALLBACK_VOICES = [
 ]
 
 
-# ---- agent store -------------------------------------------------------------
-def _path(agent_id: str) -> Path:
-    if not ID_RE.match(agent_id):
-        raise HTTPException(400, f"Invalid agent id '{agent_id}'.")
-    return AGENTS_DIR / f"{agent_id}.json"
+class CreateAgent(BaseModel):
+    agent: dict
+    message: str = "Created"
 
 
-def _unique_id(name: str) -> str:
-    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48] or "agent"
-    agent_id, n = base, 2
-    while (AGENTS_DIR / f"{agent_id}.json").exists():
-        agent_id, n = f"{base}-{n}", n + 1
-    return agent_id
+class SaveVersion(BaseModel):
+    agent: dict
+    message: str = ""
+    source: str = "human"
+    base_version: Optional[int] = None  # version the edit started from
 
 
-def _write(agent_id: str, agent: dict) -> None:
-    AGENTS_DIR.mkdir(exist_ok=True)
-    path = _path(agent_id)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(agent, indent=2) + "\n")
-    tmp.replace(path)  # atomic: never leave a half-written agent
+def _issues(agent: dict) -> list[dict]:
+    return [i.to_dict() for i in validate_agent(agent)]
 
 
-def load_agent(agent_id: str) -> dict:
-    path = _path(agent_id)
-    if not path.exists():
-        raise HTTPException(404, f"Agent '{agent_id}' not found.")
-    return json.loads(path.read_text())
+def _with_issues(agent_id: str, record: dict) -> dict:
+    return {"id": agent_id, **record, "issues": _issues(record["agent"])}
 
 
-def _summary(path: Path) -> dict:
-    try:
-        agent = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        agent = {}
-    return {
-        "id": path.stem,
-        "name": agent.get("name") or path.stem,
-        "node_count": len(agent.get("nodes", [])),
-        "updated_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
-    }
-
-
-def _response(agent_id: str, agent: dict) -> dict:
-    return {
-        "id": agent_id,
-        "agent": agent,
-        "issues": [i.to_dict() for i in validate_agent(agent)],
-    }
+def _http_error(e: Exception) -> HTTPException:
+    if isinstance(e, store.NotFound):
+        return HTTPException(404, str(e))
+    if isinstance(e, store.Conflict):
+        return HTTPException(409, str(e))
+    return HTTPException(400, str(e))
 
 
 # ---- call-request validation -------------------------------------------------
-def _start_rejection(request: dict) -> JSONResponse | None:
+def _start_rejection(request: dict) -> Optional[JSONResponse]:
     """Return an error response if a /start request names an agent that can't run."""
-    body = request.get("body") or {}
-    if isinstance(body.get("agent"), dict):
-        agent = body["agent"]
-    elif body.get("agent_id"):
-        try:
-            agent = load_agent(body["agent_id"])
-        except HTTPException as e:
-            return JSONResponse({"detail": e.detail}, status_code=e.status_code)
-    else:
-        return None  # the bot falls back to AGENT_FLOW
-    issues = [i.to_dict() for i in validate_agent(agent)]
+    try:
+        agent, _, _ = store.resolve_call_agent(request.get("body") or {})
+    except (store.NotFound, ValueError) as e:
+        err = _http_error(e)
+        return JSONResponse({"detail": err.detail}, status_code=err.status_code)
+    if agent is None:
+        return None  # the bot falls back to its default agent
+    issues = _issues(agent)
     if any(i["severity"] == "error" for i in issues):
         return JSONResponse({"detail": "Agent has errors.", "issues": issues}, status_code=422)
     return None
@@ -165,40 +134,74 @@ def register_routes(app: FastAPI) -> None:
     # adds CORS headers to rejections too.
     app.add_middleware(StartValidationMiddleware)
 
+    # -- agents --
     @app.get("/api/agents")
     async def list_agents():
-        AGENTS_DIR.mkdir(exist_ok=True)
-        paths = sorted(AGENTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        return [_summary(p) for p in paths]
+        return store.list_agents()
 
     @app.post("/api/agents", status_code=201)
-    async def create_agent(agent: dict):
-        agent_id = _unique_id(agent.get("name") or "agent")
-        _write(agent_id, agent)
-        return _response(agent_id, agent)
+    async def create_agent(req: CreateAgent):
+        agent_id, record = store.create_agent(req.agent, req.message)
+        return _with_issues(agent_id, record)
 
     @app.get("/api/agents/{agent_id}")
     async def get_agent(agent_id: str):
-        return _response(agent_id, load_agent(agent_id))
+        try:
+            return _with_issues(agent_id, store.get_version(agent_id))
+        except (store.NotFound, ValueError) as e:
+            raise _http_error(e)
 
     @app.put("/api/agents/{agent_id}")
-    async def save_agent(agent_id: str, agent: dict):
+    async def save_agent(agent_id: str, req: SaveVersion):
         # Drafts with errors are saved too, so work in progress is never lost.
         # The test call is what refuses to run an invalid agent.
-        _write(agent_id, agent)
-        return _response(agent_id, agent)
+        try:
+            store.latest_version(agent_id)  # only existing agents get new versions
+            record = store.save_version(agent_id, req.agent, req.message, req.source, req.base_version)
+        except (store.NotFound, store.Conflict, ValueError) as e:
+            raise _http_error(e)
+        return _with_issues(agent_id, record)
 
     @app.delete("/api/agents/{agent_id}", status_code=204)
     async def delete_agent(agent_id: str):
-        path = _path(agent_id)
-        if not path.exists():
-            raise HTTPException(404, f"Agent '{agent_id}' not found.")
-        path.unlink()
+        try:
+            store.delete_agent(agent_id)
+        except (store.NotFound, ValueError) as e:
+            raise _http_error(e)
         return Response(status_code=204)
 
+    # -- versions --
+    @app.get("/api/agents/{agent_id}/versions")
+    async def list_versions(agent_id: str):
+        try:
+            return store.list_versions(agent_id)
+        except (store.NotFound, ValueError) as e:
+            raise _http_error(e)
+
+    @app.get("/api/agents/{agent_id}/versions/{version}")
+    async def get_version(agent_id: str, version: int):
+        try:
+            return _with_issues(agent_id, store.get_version(agent_id, version))
+        except (store.NotFound, ValueError) as e:
+            raise _http_error(e)
+
+    @app.post("/api/agents/{agent_id}/versions/{version}/restore")
+    async def restore_version(agent_id: str, version: int):
+        # Rolling back appends a copy of the old version, so history stays linear
+        # and the rollback itself can be undone.
+        try:
+            old = store.get_version(agent_id, version)
+            record = store.save_version(
+                agent_id, old["agent"], f"Restored version {version}", source="restore"
+            )
+        except (store.NotFound, ValueError) as e:
+            raise _http_error(e)
+        return _with_issues(agent_id, record)
+
+    # -- tools --
     @app.post("/api/validate")
     async def validate(agent: dict):
-        return {"issues": [i.to_dict() for i in validate_agent(agent)]}
+        return {"issues": _issues(agent)}
 
     voices_cache: dict = {"at": 0.0, "voices": None}
 
