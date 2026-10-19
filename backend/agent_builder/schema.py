@@ -48,6 +48,8 @@ class Node:
     pre_actions: list = field(default_factory=list)
     post_actions: list = field(default_factory=list)
     end: bool = False                                   # terminal -> ends the call
+    # Editor-only canvas coordinates ({"x": .., "y": ..}). Ignored by the runtime.
+    position: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "Node":
@@ -59,6 +61,7 @@ class Node:
             pre_actions=d.get("pre_actions", []),
             post_actions=d.get("post_actions", []),
             end=d.get("end", False),
+            position=d.get("position"),
         )
 
 
