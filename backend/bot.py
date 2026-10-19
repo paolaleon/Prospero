@@ -34,6 +34,7 @@ from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.workers.runner import WorkerRunner
 from pipecat_flows import FlowManager
 
+import api
 from agent_builder import AgentBuilder
 
 # Load .env next to this file, so the bot runs the same from the repo root or backend/.
@@ -117,6 +118,8 @@ async def bot(runner_args: RunnerArguments):
 
 
 if __name__ == "__main__":
-    from pipecat.runner.run import main
+    from pipecat.runner.run import app, main
 
+    # Must be registered before main() adds the runner's own routes.
+    api.register_routes(app)
     main()
