@@ -21,6 +21,7 @@ env/
 
 # ---- Node / frontend (Phase 1 UI later) ----
 node_modules/
+*.tsbuildinfo
 .next/
 dist/
 *.log
