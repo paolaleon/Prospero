@@ -9,6 +9,10 @@
 #   /api/validate        structured errors/warnings for a draft agent
 #   /api/voices          ElevenLabs voices for the voice picker
 #
+# It also checks the agent of every call request (POST /start) before the runner
+# accepts it, so an invalid draft is refused with its issues instead of the call
+# hanging after the bot fails to build.
+#
 # Agents are plain JSON files on purpose: they stay diffable, hand-editable and
 # exactly the format AgentBuilder consumes.
 #
@@ -22,6 +26,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from agent_builder import validate_agent
@@ -90,9 +95,75 @@ def _response(agent_id: str, agent: dict) -> dict:
     }
 
 
+# ---- call-request validation -------------------------------------------------
+def _start_rejection(request: dict) -> JSONResponse | None:
+    """Return an error response if a /start request names an agent that can't run."""
+    body = request.get("body") or {}
+    if isinstance(body.get("agent"), dict):
+        agent = body["agent"]
+    elif body.get("agent_id"):
+        try:
+            agent = load_agent(body["agent_id"])
+        except HTTPException as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+    else:
+        return None  # the bot falls back to AGENT_FLOW
+    issues = [i.to_dict() for i in validate_agent(agent)]
+    if any(i["severity"] == "error" for i in issues):
+        return JSONResponse({"detail": "Agent has errors.", "issues": issues}, status_code=422)
+    return None
+
+
+class StartValidationMiddleware:
+    """Validates the agent in POST /start before the runner's own route sees it.
+
+    /start belongs to the Pipecat runner, and the bot only builds the agent after
+    the WebRTC connection is up. Without this check, an invalid agent gets a
+    session id, then fails inside the bot and the client waits for a call that
+    never starts.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != "/start":
+            return await self.app(scope, receive, send)
+
+        chunks, more = [], True
+        while more:
+            message = await receive()
+            chunks.append(message.get("body", b""))
+            more = message.get("more_body", False)
+        raw = b"".join(chunks)
+
+        try:
+            rejection = _start_rejection(json.loads(raw or b"{}"))
+        except (json.JSONDecodeError, AttributeError):
+            rejection = None  # let the runner report malformed requests itself
+        if rejection:
+            return await rejection(scope, receive, send)
+
+        # Hand the runner the body we already read.
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": raw, "more_body": False}
+
+        await self.app(scope, replay, send)
+
+
 # ---- routes ------------------------------------------------------------------
 def register_routes(app: FastAPI) -> None:
     """Attach the editor API to the runner's FastAPI app."""
+
+    # Added before the runner's CORS middleware, which therefore wraps it and
+    # adds CORS headers to rejections too.
+    app.add_middleware(StartValidationMiddleware)
 
     @app.get("/api/agents")
     async def list_agents():
