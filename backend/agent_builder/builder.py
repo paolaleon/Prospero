@@ -17,6 +17,7 @@ from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 
 from .schema import AgentConfig, Edge, Node
+from .validation import validate_agent
 
 
 class AgentBuilder:
@@ -25,34 +26,21 @@ class AgentBuilder:
     def __init__(self, config: AgentConfig):
         self.config = config
         self._nodes_by_name = {n.name: n for n in config.nodes}
-        self._validate()
 
     # ---- loading -----------------------------------------------------------
     @classmethod
     def from_dict(cls, data: dict) -> "AgentBuilder":
+        # Validate the raw dict first so malformed input gives a readable error
+        # instead of a KeyError from the dataclass constructors.
+        errors = [i.message for i in validate_agent(data) if i.severity == "error"]
+        if errors:
+            raise ValueError("Invalid agent: " + " ".join(errors))
         return cls(AgentConfig.from_dict(data))
 
     @classmethod
     def from_json(cls, path: Union[str, Path]) -> "AgentBuilder":
         data = json.loads(Path(path).read_text())
         return cls.from_dict(data)
-
-    # ---- validation --------------------------------------------------------
-    def _validate(self) -> None:
-        names = set(self._nodes_by_name)
-        if not names:
-            raise ValueError("Agent has no nodes.")
-        if self.config.initial_node not in names:
-            raise ValueError(
-                f"initial_node '{self.config.initial_node}' is not a defined node."
-            )
-        for node in self.config.nodes:
-            for edge in node.edges:
-                if edge.target not in names:
-                    raise ValueError(
-                        f"Edge '{edge.function}' in node '{node.name}' targets "
-                        f"unknown node '{edge.target}'."
-                    )
 
     # ---- compilation -------------------------------------------------------
     def build_initial_node(self) -> NodeConfig:
