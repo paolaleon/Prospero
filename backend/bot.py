@@ -14,8 +14,9 @@
 #   {"agent_id": "...", "version": n}       a saved version (the latest if omitted)
 #   {}                                      AGENT_FLOW below
 #
-# During a call, every node change is pushed to the client as an RTVI server
-# message, so the editor can highlight where the conversation is in the graph.
+# During a call, every node change and every recorded event (turns, transitions)
+# is pushed to the client as an RTVI server message, so the editor can show the
+# live transcript and highlight where the conversation is in the graph.
 # When the call ends, it is recorded (transcript, node path, collected data and
 # the agent it ran) in backend/calls/, as material for iterating on the agent.
 #
@@ -85,13 +86,15 @@ class CallRecorder:
     def call_id(self) -> str:
         return self.record["id"]
 
-    def add(self, type: str, **fields) -> None:
-        self.record["events"].append({"t": store.now(), "type": type, **fields})
+    def add(self, type: str, **fields) -> dict:
+        event = {"t": store.now(), "type": type, **fields}
+        self.record["events"].append(event)
+        return event
 
-    def transition(self, from_node: str, function: str, to_node: str, args: dict) -> None:
-        self.add("transition", from_node=from_node, function=function, to_node=to_node, args=args)
+    def transition(self, from_node: str, function: str, to_node: str, args: dict) -> dict:
         self.record["final_node"] = to_node
         self.record["collected"].update(args)
+        return self.add("transition", from_node=from_node, function=function, to_node=to_node, args=args)
 
     def save(self) -> None:
         end_nodes = {n["name"] for n in self.record["agent"]["nodes"] if n.get("end")}
@@ -120,8 +123,13 @@ async def run_bot(
     async def notify_node(node: str, **extra) -> None:
         await worker.rtvi.send_server_message({"type": "flow.node", "node": node, **extra})
 
+    async def notify_event(event: dict) -> None:
+        # The live transcript is the call record as it's written, so what the
+        # editor shows during a call is exactly what gets saved.
+        await worker.rtvi.send_server_message({"type": "call.event", "event": event})
+
     async def on_transition(from_node: str, function: str, to_node: str, args: dict) -> None:
-        recorder.transition(from_node, function, to_node, args)
+        await notify_event(recorder.transition(from_node, function, to_node, args))
         await notify_node(to_node, from_node=from_node, function=function, args=args)
 
     builder.on_transition = on_transition
@@ -160,12 +168,12 @@ async def run_bot(
     @context_aggregator.user().event_handler("on_user_turn_message_added")
     async def on_user_message(aggregator, message):
         if message.content:
-            recorder.add("user", text=message.content)
+            await notify_event(recorder.add("user", text=message.content))
 
     @context_aggregator.assistant().event_handler("on_assistant_turn_stopped")
     async def on_assistant_turn(aggregator, message):
         if message.content:
-            recorder.add("agent", text=message.content, interrupted=message.interrupted)
+            await notify_event(recorder.add("agent", text=message.content, interrupted=message.interrupted))
 
     @worker.rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):
