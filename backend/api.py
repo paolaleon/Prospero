@@ -12,24 +12,22 @@
 #   /api/validate                          structured errors/warnings for a draft agent
 #   /api/voices                            ElevenLabs voices for the voice picker
 #
-# It also checks the agent of every call request (POST /start) before the runner
-# accepts it, so an invalid draft is refused with its issues instead of the call
-# hanging after the bot fails to build.
+# register_routes also installs the call guard (call_guard.py), which refuses
+# call requests for agents with errors before the runner accepts them.
 #
 
-import json
 import os
 import time
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Response
 from loguru import logger
 from pydantic import BaseModel
 
 import store
-from agent_builder import validate_agent
+from call_guard import StartValidationMiddleware
+from http_common import http_error, issues_json
 
 # Used when the ElevenLabs voices API is unreachable, so the picker still works.
 FALLBACK_VOICES = [
@@ -52,79 +50,8 @@ class SaveVersion(BaseModel):
     base_version: Optional[int] = None  # version the edit started from
 
 
-def _issues(agent: dict) -> list[dict]:
-    return [i.to_dict() for i in validate_agent(agent)]
-
-
 def _with_issues(agent_id: str, record: dict) -> dict:
-    return {"id": agent_id, **record, "issues": _issues(record["agent"])}
-
-
-def _http_error(e: Exception) -> HTTPException:
-    if isinstance(e, store.NotFound):
-        return HTTPException(404, str(e))
-    if isinstance(e, store.Conflict):
-        return HTTPException(409, str(e))
-    return HTTPException(400, str(e))
-
-
-# ---- call-request validation -------------------------------------------------
-def _start_rejection(request: dict) -> Optional[JSONResponse]:
-    """Return an error response if a /start request names an agent that can't run."""
-    try:
-        agent, _, _ = store.resolve_call_agent(request.get("body") or {})
-    except (store.NotFound, ValueError) as e:
-        err = _http_error(e)
-        return JSONResponse({"detail": err.detail}, status_code=err.status_code)
-    if agent is None:
-        return None  # the bot falls back to its default agent
-    issues = _issues(agent)
-    if any(i["severity"] == "error" for i in issues):
-        return JSONResponse({"detail": "Agent has errors.", "issues": issues}, status_code=422)
-    return None
-
-
-class StartValidationMiddleware:
-    """Validates the agent in POST /start before the runner's own route sees it.
-
-    /start belongs to the Pipecat runner, and the bot only builds the agent after
-    the WebRTC connection is up. Without this check, an invalid agent gets a
-    session id, then fails inside the bot and the client waits for a call that
-    never starts.
-    """
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != "/start":
-            return await self.app(scope, receive, send)
-
-        chunks, more = [], True
-        while more:
-            message = await receive()
-            chunks.append(message.get("body", b""))
-            more = message.get("more_body", False)
-        raw = b"".join(chunks)
-
-        try:
-            rejection = _start_rejection(json.loads(raw or b"{}"))
-        except (json.JSONDecodeError, AttributeError):
-            rejection = None  # let the runner report malformed requests itself
-        if rejection:
-            return await rejection(scope, receive, send)
-
-        # Hand the runner the body we already read.
-        replayed = False
-
-        async def replay():
-            nonlocal replayed
-            if replayed:
-                return await receive()
-            replayed = True
-            return {"type": "http.request", "body": raw, "more_body": False}
-
-        await self.app(scope, replay, send)
+    return {"id": agent_id, **record, "issues": issues_json(record["agent"])}
 
 
 # ---- routes ------------------------------------------------------------------
@@ -150,7 +77,7 @@ def register_routes(app: FastAPI) -> None:
         try:
             return _with_issues(agent_id, store.get_version(agent_id))
         except (store.NotFound, ValueError) as e:
-            raise _http_error(e)
+            raise http_error(e)
 
     @app.put("/api/agents/{agent_id}")
     async def save_agent(agent_id: str, req: SaveVersion):
@@ -160,7 +87,7 @@ def register_routes(app: FastAPI) -> None:
             store.latest_version(agent_id)  # only existing agents get new versions
             record = store.save_version(agent_id, req.agent, req.message, req.source, req.base_version)
         except (store.NotFound, store.Conflict, ValueError) as e:
-            raise _http_error(e)
+            raise http_error(e)
         return _with_issues(agent_id, record)
 
     @app.delete("/api/agents/{agent_id}", status_code=204)
@@ -168,7 +95,7 @@ def register_routes(app: FastAPI) -> None:
         try:
             store.delete_agent(agent_id)
         except (store.NotFound, ValueError) as e:
-            raise _http_error(e)
+            raise http_error(e)
         return Response(status_code=204)
 
     # -- versions --
@@ -177,14 +104,14 @@ def register_routes(app: FastAPI) -> None:
         try:
             return store.list_versions(agent_id)
         except (store.NotFound, ValueError) as e:
-            raise _http_error(e)
+            raise http_error(e)
 
     @app.get("/api/agents/{agent_id}/versions/{version}")
     async def get_version(agent_id: str, version: int):
         try:
             return _with_issues(agent_id, store.get_version(agent_id, version))
         except (store.NotFound, ValueError) as e:
-            raise _http_error(e)
+            raise http_error(e)
 
     @app.post("/api/agents/{agent_id}/versions/{version}/restore")
     async def restore_version(agent_id: str, version: int):
@@ -196,7 +123,7 @@ def register_routes(app: FastAPI) -> None:
                 agent_id, old["agent"], f"Restored version {version}", source="restore"
             )
         except (store.NotFound, ValueError) as e:
-            raise _http_error(e)
+            raise http_error(e)
         return _with_issues(agent_id, record)
 
     # -- calls --
@@ -209,12 +136,12 @@ def register_routes(app: FastAPI) -> None:
         try:
             return store.get_call(call_id)
         except (store.NotFound, ValueError) as e:
-            raise _http_error(e)
+            raise http_error(e)
 
     # -- tools --
     @app.post("/api/validate")
     async def validate(agent: dict):
-        return {"issues": _issues(agent)}
+        return {"issues": issues_json(agent)}
 
     voices_cache: dict = {"at": 0.0, "voices": None}
 
