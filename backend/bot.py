@@ -96,6 +96,11 @@ class CallRecorder:
         self.record["collected"].update(args)
         return self.add("transition", from_node=from_node, function=function, to_node=to_node, args=args)
 
+    def refusal(self, node: str, function: str, args: dict, problems: list) -> dict:
+        # A transition the LLM tried without the data it requires. Repeated
+        # refusals in one node are a sign its instructions need work.
+        return self.add("refused", node=node, function=function, args=args, problems=problems)
+
     def save(self) -> None:
         end_nodes = {n["name"] for n in self.record["agent"]["nodes"] if n.get("end")}
         self.record["ended_at"] = store.now()
@@ -132,7 +137,11 @@ async def run_bot(
         await notify_event(recorder.transition(from_node, function, to_node, args))
         await notify_node(to_node, from_node=from_node, function=function, args=args)
 
+    async def on_transition_refused(node: str, function: str, args: dict, problems: list) -> None:
+        await notify_event(recorder.refusal(node, function, args, problems))
+
     builder.on_transition = on_transition
+    builder.on_transition_refused = on_transition_refused
 
     context = LLMContext()
     context_aggregator = LLMContextAggregatorPair(

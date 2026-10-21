@@ -191,6 +191,7 @@ def save_call(record: dict) -> None:
         {"t", "type": "transition", "from_node", "function", "to_node", "args"},
         {"t", "type": "user", "text"},
         {"t", "type": "agent", "text", "interrupted"},
+        {"t", "type": "refused", "node", "function", "args", "problems"},
       ]
     }
     """

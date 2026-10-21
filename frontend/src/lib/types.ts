@@ -92,6 +92,15 @@ export type CallEvent =
       function: string;
       to_node: string;
       args: Record<string, unknown>;
+    }
+  | {
+      // The LLM tried a transition without the data it requires; the call stayed put.
+      t: string;
+      type: "refused";
+      node: string;
+      function: string;
+      args: Record<string, unknown>;
+      problems: string[];
     };
 
 export interface CallSummary {

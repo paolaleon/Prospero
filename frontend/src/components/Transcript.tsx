@@ -1,8 +1,8 @@
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Ban } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { CallEvent } from "../lib/types";
 
-/** A call's timeline: caller and agent turns, with transitions shown inline. */
+/** A call's timeline: caller and agent turns, with transitions (and refused ones) inline. */
 export default function Transcript({ events, follow = false }: { events: CallEvent[]; follow?: boolean }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -12,6 +12,22 @@ export default function Transcript({ events, follow = false }: { events: CallEve
   return (
     <div className="space-y-2">
       {events.map((e, i) => {
+        if (e.type === "refused") {
+          return (
+            <div key={i} className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+              <div className="flex items-center gap-1 font-mono">
+                <Ban size={12} />
+                <span>{e.function}</span>
+                <span className="ml-auto font-sans text-amber-700">refused, stayed in {e.node}</span>
+              </div>
+              <ul className="mt-1 list-inside list-disc">
+                {e.problems.map((p) => (
+                  <li key={p}>{p}</li>
+                ))}
+              </ul>
+            </div>
+          );
+        }
         if (e.type === "transition") {
           const args = Object.entries(e.args ?? {});
           return (
