@@ -6,11 +6,21 @@
 # UI can pin them to the canvas. Errors make an agent unrunnable; warnings are
 # likely mistakes (unreachable nodes, dead ends) that still compile.
 #
+# Each check is a small rule registered with one of three decorators:
+#
+#   @agent_rule  def rule(ctx)                    -> issues about the whole agent
+#   @node_rule   def rule(ctx, node)              -> issues about one node
+#   @edge_rule   def rule(ctx, node, index, edge) -> issues about one transition
+#
+# The runner does the looping, and `Context` holds the facts several rules need
+# (node names, the graph, what's reachable), computed once. To add a check, write
+# one decorated function that returns (or yields) Issues; nothing else changes.
+#
 
 import re
 from collections import deque
-from dataclasses import asdict, dataclass
-from typing import Literal, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Callable, Iterable, Literal, Optional
 
 # OpenAI tool names: ^[a-zA-Z0-9_-]{1,64}$
 FUNCTION_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -28,103 +38,222 @@ class Issue:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
 
+def error(message: str, node: Optional[str] = None, edge: Optional[int] = None) -> Issue:
+    return Issue("error", message, node, edge)
+
+
+def warning(message: str, node: Optional[str] = None, edge: Optional[int] = None) -> Issue:
+    return Issue("warning", message, node, edge)
+
+
+# ---- facts shared by the rules -------------------------------------------------
+@dataclass
+class Context:
+    data: dict                      # the raw agent
+    nodes: list                     # every entry of data["nodes"], as given
+    named: list = field(default_factory=list)   # node dicts that have a name
+    known: set = field(default_factory=set)     # their names
+    graph: dict = field(default_factory=dict)   # name -> targets of its valid edges
+    reachable: set = field(default_factory=set) # names reachable from the start node
+
+    @classmethod
+    def build(cls, data: dict) -> "Context":
+        ctx = cls(data=data, nodes=data["nodes"])
+        ctx.named = [n for n in ctx.nodes if isinstance(n, dict) and _has_text(n.get("name"))]
+        ctx.known = {n["name"] for n in ctx.named}
+        ctx.graph = {name: [] for name in ctx.known}
+        for node in ctx.named:
+            for edge in node.get("edges") or []:
+                if edge.get("target") in ctx.known:
+                    ctx.graph[node["name"]].append(edge["target"])
+        ctx.reachable = _reachable(ctx.graph, data.get("initial_node"))
+        return ctx
+
+    @property
+    def initial(self) -> Optional[str]:
+        return self.data.get("initial_node")
+
+
+def _reachable(graph: dict, start: Optional[str]) -> set:
+    if start not in graph:
+        return set()
+    seen, queue = {start}, deque([start])
+    while queue:
+        for nxt in graph[queue.popleft()]:
+            if nxt not in seen:
+                seen.add(nxt)
+                queue.append(nxt)
+    return seen
+
+
+def _has_text(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _label(edge: dict, index: int) -> str:
+    """How a transition is named in messages: its function, or its position."""
+    return f"'{edge['function']}'" if edge.get("function") else f"#{index + 1}"
+
+
+# ---- registry --------------------------------------------------------------------
+Issues = Iterable[Issue]
+_AGENT_RULES: list[Callable[[Context], Issues]] = []
+_NODE_RULES: list[Callable[[Context, dict], Issues]] = []
+_EDGE_RULES: list[Callable[[Context, dict, int, dict], Issues]] = []
+
+
+def agent_rule(fn):
+    _AGENT_RULES.append(fn)
+    return fn
+
+
+def node_rule(fn):
+    _NODE_RULES.append(fn)
+    return fn
+
+
+def edge_rule(fn):
+    _EDGE_RULES.append(fn)
+    return fn
+
+
 def validate_agent(data: dict) -> list[Issue]:
-    issues: list[Issue] = []
-
-    def error(msg, node=None, edge=None):
-        issues.append(Issue("error", msg, node, edge))
-
-    def warn(msg, node=None, edge=None):
-        issues.append(Issue("warning", msg, node, edge))
-
+    # Without a node list nothing else can be checked meaningfully.
     if not isinstance(data, dict):
-        return [Issue("error", "Agent must be a JSON object.")]
-    if not str(data.get("name", "")).strip():
-        error("Agent needs a name.")
+        return [error("Agent must be a JSON object.")]
+    if not isinstance(data.get("nodes"), list) or not data["nodes"]:
+        return [*_name_issues(data), error("Agent has no nodes.")]
 
-    nodes = data.get("nodes")
-    if not isinstance(nodes, list) or not nodes:
-        error("Agent has no nodes.")
-        return issues
+    ctx = Context.build(data)
+    issues: list[Issue] = []
+    for rule in _AGENT_RULES:
+        issues += rule(ctx) or []
+    for node in ctx.named:
+        for rule in _NODE_RULES:
+            issues += rule(ctx, node) or []
+        for index, edge in enumerate(node.get("edges") or []):
+            for rule in _EDGE_RULES:
+                issues += rule(ctx, node, index, edge) or []
+    # Errors first, so the most serious problem is what the editor shows first.
+    return sorted(issues, key=lambda i: i.severity != "error")
 
-    names: list[str] = []
-    for i, node in enumerate(nodes):
+
+# ---- agent rules -------------------------------------------------------------------
+def _name_issues(data: dict) -> Issues:
+    if not _has_text(str(data.get("name", ""))):
+        yield error("Agent needs a name.")
+
+
+@agent_rule
+def agent_needs_name(ctx: Context) -> Issues:
+    # Also reported for agents with no nodes, before the context exists.
+    return _name_issues(ctx.data)
+
+
+@agent_rule
+def nodes_have_unique_names(ctx: Context) -> Issues:
+    seen = set()
+    for i, node in enumerate(ctx.nodes):
         name = node.get("name") if isinstance(node, dict) else None
-        if not isinstance(name, str) or not name.strip():
-            error(f"Node #{i + 1} has no name.")
-            continue
-        if name in names:
-            error(f"Duplicate node name '{name}'.", node=name)
-        names.append(name)
-    known = set(names)
+        if not _has_text(name):
+            yield error(f"Node #{i + 1} has no name.")
+        elif name in seen:
+            yield error(f"Duplicate node name '{name}'.", node=name)
+        else:
+            seen.add(name)
 
-    initial = data.get("initial_node")
-    if not initial:
-        error("No start node selected.")
-    elif initial not in known:
-        error(f"Start node '{initial}' is not a defined node.")
 
-    graph: dict[str, list[str]] = {n: [] for n in known}
-    for node in nodes:
-        if not isinstance(node, dict) or node.get("name") not in known:
-            continue
-        name = node["name"]
-        edges = node.get("edges", []) or []
-        tasks = node.get("task_messages", []) or []
+@agent_rule
+def start_node_exists(ctx: Context) -> Issues:
+    if not ctx.initial:
+        yield error("No start node selected.")
+    elif ctx.initial not in ctx.known:
+        yield error(f"Start node '{ctx.initial}' is not a defined node.")
 
-        if not any(str(m.get("content", "")).strip() for m in tasks if isinstance(m, dict)):
-            warn("Node has no instructions.", node=name)
-        if node.get("end") and edges:
-            warn("End node has transitions; the call ends after this node anyway.", node=name)
-        if not node.get("end") and not edges:
-            warn("Dead end: no transitions and not marked as an end node.", node=name)
 
-        seen_functions: set[str] = set()
-        for j, edge in enumerate(edges):
-            fn = edge.get("function", "")
-            label = f"'{fn}'" if fn else f"#{j + 1}"
-            if not FUNCTION_NAME_RE.match(fn or ""):
-                error(
-                    f"Transition {label}: function name must be 1-64 letters, digits, '_' or '-'.",
-                    node=name, edge=j,
-                )
-            elif fn in seen_functions:
-                error(f"Duplicate transition function '{fn}'.", node=name, edge=j)
-            seen_functions.add(fn)
+@agent_rule
+def nodes_are_reachable(ctx: Context) -> Issues:
+    if ctx.initial not in ctx.known:
+        return  # reported by start_node_exists
+    for node in ctx.named:
+        if node["name"] not in ctx.reachable:
+            yield warning("Unreachable from the start node.", node=node["name"])
 
-            if not str(edge.get("description", "")).strip():
-                error(f"Transition {label} needs a description (the LLM uses it to decide).", node=name, edge=j)
 
-            target = edge.get("target")
-            if not target:
-                error(f"Transition {label} has no target node.", node=name, edge=j)
-            elif target not in known:
-                error(f"Transition {label} targets unknown node '{target}'.", node=name, edge=j)
-            else:
-                graph[name].append(target)
+@agent_rule
+def an_end_node_is_reachable(ctx: Context) -> Issues:
+    if ctx.initial not in ctx.known:
+        return
+    if not any(n.get("end") and n["name"] in ctx.reachable for n in ctx.named):
+        yield warning("No end node is reachable, so the call never hangs up on its own.")
 
-            props = edge.get("properties", {}) or {}
-            for prop, schema in props.items():
-                ptype = schema.get("type") if isinstance(schema, dict) else None
-                if ptype not in JSON_TYPES:
-                    error(f"Transition {label}: field '{prop}' has invalid type '{ptype}'.", node=name, edge=j)
-            for req in edge.get("required", []) or []:
-                if req not in props:
-                    error(f"Transition {label}: required field '{req}' is not defined.", node=name, edge=j)
 
-    if initial in known:
-        reachable = {initial}
-        queue = deque([initial])
-        while queue:
-            for nxt in graph[queue.popleft()]:
-                if nxt not in reachable:
-                    reachable.add(nxt)
-                    queue.append(nxt)
-        for name in names:
-            if name not in reachable:
-                warn("Unreachable from the start node.", node=name)
-        end_nodes = {n["name"] for n in nodes if isinstance(n, dict) and n.get("end")}
-        if not (end_nodes & reachable):
-            warn("No end node is reachable, so the call never hangs up on its own.")
+# ---- node rules --------------------------------------------------------------------
+@node_rule
+def node_has_instructions(_ctx: Context, node: dict) -> Issues:
+    tasks = node.get("task_messages") or []
+    if not any(_has_text(str(m.get("content", ""))) for m in tasks if isinstance(m, dict)):
+        yield warning("Node has no instructions.", node=node["name"])
 
-    return issues
+
+@node_rule
+def end_node_has_no_transitions(_ctx: Context, node: dict) -> Issues:
+    if node.get("end") and node.get("edges"):
+        yield warning("End node has transitions; the call ends after this node anyway.", node=node["name"])
+
+
+@node_rule
+def node_is_not_a_dead_end(_ctx: Context, node: dict) -> Issues:
+    if not node.get("end") and not node.get("edges"):
+        yield warning("Dead end: no transitions and not marked as an end node.", node=node["name"])
+
+
+# ---- edge rules --------------------------------------------------------------------
+@edge_rule
+def function_name_is_valid_and_unique(_ctx: Context, node: dict, index: int, edge: dict) -> Issues:
+    fn = edge.get("function") or ""
+    if not FUNCTION_NAME_RE.match(fn):
+        yield error(
+            f"Transition {_label(edge, index)}: function name must be 1-64 letters, digits, '_' or '-'.",
+            node=node["name"], edge=index,
+        )
+    elif any(e.get("function") == fn for e in node["edges"][:index]):
+        yield error(f"Duplicate transition function '{fn}'.", node=node["name"], edge=index)
+
+
+@edge_rule
+def edge_has_description(_ctx: Context, node: dict, index: int, edge: dict) -> Issues:
+    if not _has_text(str(edge.get("description", ""))):
+        yield error(
+            f"Transition {_label(edge, index)} needs a description (the LLM uses it to decide).",
+            node=node["name"], edge=index,
+        )
+
+
+@edge_rule
+def edge_targets_a_node(ctx: Context, node: dict, index: int, edge: dict) -> Issues:
+    target = edge.get("target")
+    if not target:
+        yield error(f"Transition {_label(edge, index)} has no target node.", node=node["name"], edge=index)
+    elif target not in ctx.known:
+        yield error(
+            f"Transition {_label(edge, index)} targets unknown node '{target}'.", node=node["name"], edge=index
+        )
+
+
+@edge_rule
+def edge_fields_are_well_formed(_ctx: Context, node: dict, index: int, edge: dict) -> Issues:
+    props = edge.get("properties") or {}
+    for prop, schema in props.items():
+        ptype = schema.get("type") if isinstance(schema, dict) else None
+        if ptype not in JSON_TYPES:
+            yield error(
+                f"Transition {_label(edge, index)}: field '{prop}' has invalid type '{ptype}'.",
+                node=node["name"], edge=index,
+            )
+    for req in edge.get("required") or []:
+        if req not in props:
+            yield error(
+                f"Transition {_label(edge, index)}: required field '{req}' is not defined.",
+                node=node["name"], edge=index,
+            )

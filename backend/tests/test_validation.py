@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from agent_builder import validate_agent
+from agent_builder import validation
 
 EXAMPLE = json.loads((Path(__file__).parent.parent / "example_flow.json").read_text())
 
@@ -160,3 +161,24 @@ def test_to_dict_omits_missing_location():
     [issue] = validate_agent([])
     assert issue.to_dict() == {"severity": "error", "message": "Agent must be a JSON object."}
 
+
+def test_errors_come_before_warnings():
+    data = edge(agent(), description="")
+    data["nodes"][1]["task_messages"] = []
+    severities = [i.severity for i in validate_agent(data)]
+    assert severities == sorted(severities, key=lambda s: s != "error")
+
+
+def test_a_new_rule_only_needs_a_decorator():
+    @validation.node_rule
+    def node_names_are_snake_case(_ctx, node):
+        if node["name"] != node["name"].lower():
+            yield validation.warning("Use snake_case for node names.", node=node["name"])
+
+    try:
+        data = agent()
+        data["nodes"][1]["name"] = "Done"
+        data["nodes"][0]["edges"][0]["target"] = "Done"
+        assert ("warning", "Use snake_case for node names.", "Done", None) in issues(data)
+    finally:
+        validation._NODE_RULES.remove(node_names_are_snake_case)
