@@ -69,7 +69,10 @@ def register_routes(app: FastAPI) -> None:
 
     @app.post("/api/agents", status_code=201)
     async def create_agent(req: CreateAgent):
-        agent_id, record = store.create_agent(req.agent, req.message)
+        try:
+            agent_id, record = store.create_agent(req.agent, req.message)
+        except ValueError as e:
+            raise http_error(e)
         return _with_issues(agent_id, record)
 
     @app.get("/api/agents/{agent_id}")

@@ -115,7 +115,16 @@ def save_version(
 
 
 def create_agent(agent: dict, message: str = "Created") -> tuple[str, dict]:
-    base = re.sub(r"[^a-z0-9]+", "-", (agent.get("name") or "").lower()).strip("-")[:48] or "agent"
+    """Store a new agent as version 1, with an id made from its name.
+
+    The agent can be renamed freely afterwards (its `name` is just a field), but
+    the id is kept, so links, its folder and its call records stay valid.
+    """
+    name = agent.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("A new agent needs a name.")
+    # Names with no usable letters (e.g. only emoji) still get an id.
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48] or "agent"
     agent_id, n = base, 2
     while (AGENTS_DIR / agent_id).exists():
         agent_id, n = f"{base}-{n}", n + 1
