@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { navigate } from "../lib/router";
 import { isDirty, useEditor } from "../lib/store";
 import Canvas from "./Canvas";
+import Inspector from "./Inspector";
 
 export default function Editor({ agentId }: { agentId: string }) {
   const load = useEditor((s) => s.load);
@@ -43,7 +44,7 @@ export default function Editor({ agentId }: { agentId: string }) {
           <Canvas />
         </main>
         <aside className="w-96 shrink-0 overflow-y-auto border-l border-slate-200 bg-white">
-          <div className="p-4 text-sm text-slate-500">Select a node or transition to edit it.</div>
+          <Inspector />
         </aside>
       </div>
     </div>
