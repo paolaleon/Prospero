@@ -25,6 +25,31 @@ from .validation import validate_agent
 # call and stream its position in the graph to the editor.
 TransitionHook = Callable[[str, str, str, dict], Awaitable[None]]
 
+# Called when the LLM tries a transition without the data it requires, so the
+# call stays where it is: (node, function, args, problems).
+RefusalHook = Callable[[str, str, dict, list], Awaitable[None]]
+
+
+def check_args(edge: Edge, args: dict) -> list[str]:
+    """What's wrong with the arguments the LLM gave for `edge`, if anything.
+
+    The edge's schema is sent to the LLM, but nothing makes the model obey it:
+    it can leave out a required field, send an empty one, or pick a value that
+    isn't allowed. Those transitions are refused instead of moving on without
+    the data. (A plausible but invented value can't be detected here.)
+    """
+    problems = []
+    for name in edge.required:
+        value = args.get(name)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            problems.append(f"Missing required field '{name}'.")
+    for name, schema in edge.properties.items():
+        allowed = schema.get("enum") if isinstance(schema, dict) else None
+        if allowed and name in args and args[name] not in allowed:
+            options = ", ".join(str(a) for a in allowed)
+            problems.append(f"Field '{name}' must be one of: {options} (got {args[name]!r}).")
+    return problems
+
 
 def _raise_if_invalid(data: dict) -> None:
     errors = [i.message for i in validate_agent(data) if i.severity == "error"]
@@ -39,10 +64,11 @@ class AgentBuilder:
         # Every way of creating a builder validates, so nothing unrunnable compiles.
         _raise_if_invalid(asdict(config))
         self.config = config
-        # Optional listener, set by whoever runs the call (it usually needs objects
-        # that only exist once the call has started). Assign it before the first
-        # transition: `builder.on_transition = my_listener`.
+        # Optional listeners, set by whoever runs the call (they usually need
+        # objects that only exist once the call has started). Assign them before
+        # the first transition: `builder.on_transition = my_listener`.
         self.on_transition: Optional[TransitionHook] = None
+        self.on_transition_refused: Optional[RefusalHook] = None
         self._nodes_by_name = {n.name: n for n in config.nodes}
 
     # ---- loading -----------------------------------------------------------
@@ -81,15 +107,20 @@ class AgentBuilder:
 
     def _make_edge_function(self, node: Node, edge: Edge) -> FlowsFunctionSchema:
         async def handler(args: dict, flow_manager: FlowManager):
+            problems = check_args(edge, args)
+            if problems:
+                # Stay in this node. Returning no next node makes Flows hand this
+                # result straight back to the LLM, which can ask the caller again.
+                logger.info(f"[{edge.function}] refused in {node.name}: {problems} | args: {args}")
+                await _notify(self.on_transition_refused, node.name, edge.function, args, problems)
+                error = " ".join(problems) + " Ask the caller for it, then call this function again."
+                return {"status": "error", "error": error}, None
+
             # Persist what the caller gave us so later nodes can use it.
             flow_manager.state.update(args)
             logger.info(f"[{edge.function}] -> {edge.target} | collected: {args}")
             next_node = self._make_node(self._nodes_by_name[edge.target])
-            if self.on_transition:
-                try:
-                    await self.on_transition(node.name, edge.function, edge.target, args)
-                except Exception as e:  # observability must never break the call
-                    logger.warning(f"on_transition hook failed: {e}")
+            await _notify(self.on_transition, node.name, edge.function, edge.target, args)
             return {"status": "success", **args}, next_node
 
         return FlowsFunctionSchema(
@@ -99,3 +130,13 @@ class AgentBuilder:
             required=edge.required,
             handler=handler,
         )
+
+
+async def _notify(listener, *args) -> None:
+    """Call an optional listener; observability must never break the call."""
+    if listener is None:
+        return
+    try:
+        await listener(*args)
+    except Exception as e:
+        logger.warning(f"{getattr(listener, '__name__', 'listener')} failed: {e}")
