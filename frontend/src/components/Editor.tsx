@@ -1,9 +1,12 @@
 import { ArrowLeft, CircleAlert, Redo2, Save, Sparkles, Undo2, X, AlertTriangle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, ApiError } from "../lib/api";
+import { pathOf, useCall } from "../lib/call";
 import { navigate } from "../lib/router";
 import { isDirty, useEditor } from "../lib/store";
+import type { CallRecord } from "../lib/types";
 import Canvas from "./Canvas";
-import Inspector from "./Inspector";
+import RightPanel, { type Tab } from "./RightPanel";
 
 export default function Editor({ agentId }: { agentId: string }) {
   const load = useEditor((s) => s.load);
@@ -17,6 +20,40 @@ export default function Editor({ agentId }: { agentId: string }) {
   }, [agentId, load]);
 
   useKeyboardShortcuts();
+
+  const [tab, setTab] = useState<Tab>("edit");
+  const [openCall, setOpenCall] = useState<CallRecord | null>(null);
+  const callStatus = useCall((s) => s.status);
+  const callPath = useCall((s) => s.path);
+  const selection = useEditor((s) => s.selection);
+
+  // Selecting something on the canvas means "edit it".
+  useEffect(() => {
+    if (selection) setTab("edit");
+  }, [selection]);
+
+  const onOpenCall = useCallback(async (id: string | null) => {
+    if (!id) return setOpenCall(null);
+    // The bot writes the record just after the call disconnects, so a call
+    // opened right as it ends may need a moment to appear.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        return setOpenCall(await api.getCall(id));
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 404)) break;
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    setOpenCall(null);
+  }, []);
+
+  // The canvas shows the live call while there is one, then a call opened from
+  // history, then the call that just ended.
+  const overlay = useMemo(() => {
+    if (callStatus === "connecting" || callStatus === "live") return callPath;
+    if (tab === "history" && openCall) return pathOf(openCall);
+    return callStatus === "ended" ? callPath : undefined;
+  }, [callStatus, callPath, tab, openCall]);
 
   // Warn before leaving with unsaved changes.
   useEffect(() => {
@@ -41,10 +78,10 @@ export default function Editor({ agentId }: { agentId: string }) {
       <div className="flex min-h-0 flex-1">
         <CopilotPanel />
         <main className="relative min-w-0 flex-1">
-          <Canvas />
+          <Canvas live={overlay} />
         </main>
-        <aside className="w-96 shrink-0 overflow-y-auto border-l border-slate-200 bg-white">
-          <Inspector />
+        <aside className="w-96 shrink-0 border-l border-slate-200 bg-white">
+          <RightPanel tab={tab} onTab={setTab} openCall={openCall} onOpenCall={onOpenCall} />
         </aside>
       </div>
     </div>
