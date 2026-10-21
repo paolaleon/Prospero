@@ -137,7 +137,7 @@ The **Gaps to prepare for** section at the end isn't a set of decisions. It list
 2. A saved `agent_id`, at a given `version` or the latest.
 3. Neither: `AGENT_FLOW`.
 
-The editor sends the current draft, saved or not. A middleware (`StartValidationMiddleware` in `api.py`) checks that agent before the runner creates a session: an agent with errors is refused with `422` and its issues, and an unknown `agent_id` gets `404`.
+The editor sends the agent by reference (`agent_id` and `version`) when there are no unsaved changes, so the call record is tied to that version. Otherwise it sends the draft itself. A middleware (`StartValidationMiddleware` in `api.py`) checks that agent before the runner creates a session: an agent with errors is refused with `422` and its issues, and an unknown `agent_id` gets `404`.
 
 **Product argument.** This is the iteration loop that matters most for a voice-agent builder: change a prompt, then call within seconds, with no save, deploy or restart. Each call is independent, so you could compare two versions of an agent side by side.
 
@@ -162,7 +162,11 @@ The editor sends the current draft, saved or not. A middleware (`StartValidation
 
 ## AD-6: Live call state reaches the browser over RTVI
 
-**Decision.** `bot.py` sends `{"type": "flow.node", ...}` RTVI messages: once when the client is ready (with the start node), and after every transition (with `from_node`, `function` and the collected `args`). The transcript comes through RTVI's standard events.
+**Decision.** `bot.py` sends two kinds of RTVI server message over the call's existing WebRTC connection:
+- `{"type": "flow.node", ...}`: once when the client is ready (with the start node), and after every transition (with `from_node`, `function` and the collected `args`). The editor uses these to light up the active node and the edges taken.
+- `{"type": "call.event", "event": ...}`: every event the call recorder writes (user turns, agent turns, transitions), as it's written (AD-7).
+
+The live transcript is built from `call.event`, not from the SDK's own transcription callbacks, so what the editor shows during a call is exactly what gets saved.
 
 **Product argument.** Users can debug by watching. The active node lights up, the data each step collected appears, and the transcript lines up with the path through the graph. That trust is what users of ElevenLabs Agents and Retell rely on.
 
@@ -177,6 +181,7 @@ The editor sends the current draft, saved or not. A middleware (`StartValidation
 **Likely challenges.**
 - *"Nothing is stored when the call ends."* It is: the same transitions are written to the call record (AD-7). RTVI is only the live view.
 - *"It sends patient data (names, reasons for visit) to the browser."* **This is a healthcare compliance point.** For a local test tool, the person testing is the caller. In production, transcripts and collected fields are protected health information: they need encryption, retention limits and access controls, and may need masking in shared views.
+- *"The agent's line only appears once it has finished speaking."* True. Events are sent when a turn is recorded. Streaming the text word by word from the SDK's callbacks would feel livelier, but it would be a second version of the transcript that could differ from the saved record.
 - *"It only works with Pipecat clients."* True, and acceptable because the editor is a Pipecat client. Telephony calls wouldn't get the live view, but they would get call logs.
 
 **Revisit when** you add phone calls or real patient traffic.
