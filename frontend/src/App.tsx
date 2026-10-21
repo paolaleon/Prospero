@@ -1,7 +1,8 @@
+import AgentList from "./components/AgentList";
+import Editor from "./components/Editor";
+import { useRoute } from "./lib/router";
+
 export default function App() {
-  return (
-    <div className="flex h-screen items-center justify-center text-slate-500">
-      Agent Editor
-    </div>
-  );
+  const route = useRoute();
+  return route.page === "editor" ? <Editor key={route.agentId} agentId={route.agentId} /> : <AgentList />;
 }
