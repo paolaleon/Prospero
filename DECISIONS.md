@@ -21,6 +21,7 @@ This file records the architectural decisions (ADs) built into the project so fa
 | AD-7 | Every call is recorded with the agent it ran |
 | AD-8 | The frontend and backend are separate apps that only communicate over HTTP |
 | AD-9 | Every edit to an agent is a named, serialisable operation |
+| AD-10 | A transition without the data it requires is refused, and the call stays in its node |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -192,7 +193,7 @@ The live transcript is built from `call.event`, not from the SDK's own transcrip
 
 **Decision.** `bot.py` records each call on the server (`CallRecorder`) and writes it to `backend/calls/{id}.json` when the call ends, whether the agent hung up or the caller did. The record is self-contained:
 - **Agent:** a snapshot of the agent it ran, plus `agent_id` and `agent_version` (`null` for an unsaved draft).
-- **Timeline:** user turns, agent turns (marked if interrupted) and transitions (with their arguments).
+- **Timeline:** user turns, agent turns (marked if interrupted), transitions (with their arguments) and refused transitions (AD-10).
 - **Outcome:** `final_node`, the merged `collected` data, and `ended_by` (`agent` if it finished on an end node, otherwise `caller`).
 - **Source:** `test`, `production` or `mock`.
 
@@ -274,12 +275,46 @@ Records are read through `/api/calls`. The client is told the call id when it co
 
 ---
 
+## AD-10: A transition without the data it requires is refused, and the call stays in its node
+
+**Decision.** Before taking a transition, its handler (`check_args` in `backend/agent_builder/builder.py`) checks the arguments the LLM supplied against the edge's own schema:
+- every **required** field must be present and not blank;
+- any field with **allowed values** (`enum`) must use one of them.
+
+If a check fails, the transition is **refused**:
+- the call stays in the current node and nothing is saved to the call's state;
+- the handler returns an error to the LLM ("Missing required field 'reason'. Ask the caller for it, then call this function again."). Pipecat Flows runs the LLM again straight away, so the agent asks the caller for what's missing;
+- an `on_transition_refused` listener is notified. `bot.py` records it as a `refused` event in the call record (AD-7) and streams it to the editor, where it shows in amber in the transcript.
+
+**Product argument.** A field marked "Required" in the editor now means what it says. Without this, an agent could move on to `offer_times` without a name, and the booking would fail later, or never, with nothing in the transcript to explain why. Builders get the behaviour they configured, and see it in the transcript when the model tries to cut corners.
+
+**AI angle.**
+- **The schema is a request, not a guarantee.** OpenAI's models usually respect a tool's required fields, but nothing forces them to: without strict mode, a model can leave a field out, send an empty string, or choose a value outside the allowed list. This turns those failures into a recoverable step instead of corrupt data.
+- **Self-correction instead of failure.** The refusal is phrased as an instruction the LLM can act on, so the usual outcome is one extra question to the caller, not a broken call.
+- **A signal for Phase 2.** Each refusal is recorded with its node, function and problems. Several refusals in the same node across calls mean its instructions don't make the model gather the data, which is the kind of issue the copilot should detect and fix (for example, by adding "ask for the reason for the visit" to the node).
+
+**Alternatives considered.**
+- OpenAI's strict structured outputs. Not used for now: they constrain the format, but a model can still fill a required field with an invented value, and they're specific to OpenAI. Our check runs the same way for any LLM provider. The two could also be combined later.
+- Refusing only in the editor, through validation. Not possible: whether the data is present is only known during the call.
+- Transitioning anyway and flagging the problem afterwards. Rejected because the call would continue without data that later nodes rely on.
+
+**Cost of reversal.** Low. Removing the check restores the previous behaviour; recorded `refused` events would simply stop appearing.
+
+**Likely challenges.**
+- *"Can the call get stuck asking again and again?"* In principle, if the caller never gives the information. There's no limit yet on refusals per node; the caller can still hang up, and the repeated refusals show up in the record. A limit, or a fallback edge after N refusals, is part of gap 3.
+- *"It doesn't catch invented values."* Correct. "Unknown" or a misheard name passes, because it's a non-empty string. Detecting that needs checks specific to each field (e.g. a date format) or an LLM review of the call afterwards.
+- *"Only required fields and allowed values are checked, not types."* True. A number sent as text, for example, isn't refused. Type checks could be added to `check_args` the same way.
+
+**Revisit when** you add stricter field types (dates, phone numbers), when a limit on refusals per node is needed, or if strict structured outputs become simple to enable through Pipecat.
+
+---
+
 ## Gaps to prepare for
 
 These aren't decisions yet. They're the questions an AI product reviewer is most likely to ask.
 
 1. **Reviewing AI edits.** Versions and rollback exist (AD-4). Still missing is a visual diff of a proposed change on the canvas, with accept and reject, before it becomes a version.
 2. **Evaluations.** Calls are recorded (AD-7). Still missing are scripted test conversations with expected paths ("a caller who wants to cancel should reach `cancel_confirm`"), run after every change to catch regressions. (AD-3, AD-7)
-3. **Routing reliability.** The LLM chooses an edge only from its description. There's no guard or fallback if it never calls a function, picks the wrong edge, or fills arguments badly. Options: global edges available from every node (such as "talk to a human"), a limit on turns per node, and enum checks on arguments. (AD-2, AD-3)
+3. **Routing reliability.** Partly addressed: a transition missing required data, or with a value outside its allowed list, is refused and the LLM asks again (AD-10). Still missing: a fallback if the LLM never calls a function or picks the wrong edge, global edges available from every node (such as "talk to a human"), a limit on turns per node, and detecting plausible but invented values. (AD-2, AD-3, AD-10)
 4. **Running arbitrary prompts on shared keys.** Sign-in, rate limits and per-user quotas before anything is deployed. (AD-5)
 5. **Patient data in transcripts and collected fields.** Encryption, retention limits, access controls and masking before real traffic. (AD-6, AD-7)
