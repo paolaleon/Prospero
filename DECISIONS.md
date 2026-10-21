@@ -78,7 +78,7 @@ The **Gaps to prepare for** section at the end isn't a set of decisions. It list
 
 ## AD-3: `AgentBuilder` reports transitions through a callback
 
-**Decision.** An optional async `on_transition(from_node, function, to_node, args)` callback runs after every transition. If it fails, the error is logged and the call carries on.
+**Decision.** `AgentBuilder` has an optional `on_transition` attribute: an async `(from_node, function, to_node, args)` listener. It's called each time a transition is taken, just before the next node starts. Whoever runs the call assigns it (`builder.on_transition = listener`), because the listener usually needs objects that only exist once the call has started; `bot.py` gives each call its own, bound to that call's recorder. If it fails, the error is logged and the call carries on.
 
 **Product argument.** Users can see where the conversation is in the graph as it happens. The builder doesn't know who's listening, so the same hook can later feed call logs, analytics or alerts without changes to the builder.
 

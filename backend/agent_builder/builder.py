@@ -20,8 +20,9 @@ from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 from .schema import AgentConfig, Edge, Node
 from .validation import validate_agent
 
-# Called after every transition: (from_node, function, to_node, collected_args).
-# bot.py uses it to stream the live position in the graph to the editor.
+# Called each time a transition is taken, just before the next node starts:
+# (from_node, function, to_node, collected_args). bot.py uses it to record the
+# call and stream its position in the graph to the editor.
 TransitionHook = Callable[[str, str, str, dict], Awaitable[None]]
 
 
@@ -34,11 +35,14 @@ def _raise_if_invalid(data: dict) -> None:
 class AgentBuilder:
     """Builds a runnable Pipecat Flows graph from a declarative AgentConfig."""
 
-    def __init__(self, config: AgentConfig, on_transition: Optional[TransitionHook] = None):
+    def __init__(self, config: AgentConfig):
         # Every way of creating a builder validates, so nothing unrunnable compiles.
         _raise_if_invalid(asdict(config))
         self.config = config
-        self.on_transition = on_transition
+        # Optional listener, set by whoever runs the call (it usually needs objects
+        # that only exist once the call has started). Assign it before the first
+        # transition: `builder.on_transition = my_listener`.
+        self.on_transition: Optional[TransitionHook] = None
         self._nodes_by_name = {n.name: n for n in config.nodes}
 
     # ---- loading -----------------------------------------------------------
