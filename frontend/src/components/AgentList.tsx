@@ -1,5 +1,5 @@
 import { AudioLines, Copy, Plus, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { blankAgent } from "../lib/operations";
 import { navigate } from "../lib/router";
@@ -10,6 +10,9 @@ export default function AgentList() {
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The name is asked for up front because it also becomes the agent's id
+  // (its URL and folder), which stays fixed even if the agent is renamed later.
+  const [naming, setNaming] = useState<NameRequest | null>(null);
 
   const refresh = () =>
     api.listAgents().then(setAgents, (e: Error) => setError(`Can't reach the backend: ${e.message}`));
@@ -18,26 +21,35 @@ export default function AgentList() {
     refresh();
   }, []);
 
-  async function create() {
-    setBusy(true);
-    try {
-      const record = await api.createAgent(blankAgent());
-      navigate(`/agents/${record.id}`);
-    } catch (e) {
-      setError((e as Error).message);
-      setBusy(false);
-    }
+  function create() {
+    setNaming({
+      title: "New agent",
+      initial: "",
+      submit: (name) => api.createAgent(blankAgent(name)),
+    });
   }
 
-  async function duplicate(id: string) {
+  function duplicate(source: AgentSummary) {
+    setNaming({
+      title: `Duplicate “${source.name}”`,
+      initial: `${source.name} (copy)`,
+      submit: async (name) => {
+        const { agent } = await api.getAgent(source.id);
+        return api.createAgent({ ...agent, name }, `Duplicated from ${source.id}`);
+      },
+    });
+  }
+
+  async function submitName(name: string) {
+    if (!naming) return;
     setBusy(true);
     try {
-      const { agent } = await api.getAgent(id);
-      const record = await api.createAgent({ ...agent, name: `${agent.name} (copy)` }, `Duplicated from ${id}`);
+      const record = await naming.submit(name);
       navigate(`/agents/${record.id}`);
     } catch (e) {
       setError((e as Error).message);
       setBusy(false);
+      setNaming(null);
     }
   }
 
@@ -92,7 +104,7 @@ export default function AgentList() {
               </span>
             </button>
             <div className="flex gap-1 pr-3 opacity-0 transition group-hover:opacity-100">
-              <IconButton title="Duplicate" onClick={() => duplicate(a.id)} disabled={busy}>
+              <IconButton title="Duplicate" onClick={() => duplicate(a)} disabled={busy}>
                 <Copy size={16} />
               </IconButton>
               <IconButton title="Delete" onClick={() => remove(a)}>
@@ -102,6 +114,71 @@ export default function AgentList() {
           </li>
         ))}
       </ul>
+
+      {naming && (
+        <NameDialog request={naming} busy={busy} onSubmit={submitName} onCancel={() => setNaming(null)} />
+      )}
+    </div>
+  );
+}
+
+interface NameRequest {
+  title: string;
+  initial: string;
+  submit: (name: string) => Promise<{ id: string }>;
+}
+
+function NameDialog({
+  request,
+  busy,
+  onSubmit,
+  onCancel,
+}: {
+  request: NameRequest;
+  busy: boolean;
+  onSubmit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(request.initial);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    input.current?.select();
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/30 pt-32" onMouseDown={onCancel}>
+      <form
+        onMouseDown={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim()) onSubmit(name.trim());
+        }}
+        className="w-96 rounded-xl bg-white p-5 shadow-xl"
+      >
+        <h2 className="mb-3 font-semibold">{request.title}</h2>
+        <label className="mb-1 block text-xs font-medium text-slate-600">Name</label>
+        <input
+          ref={input}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && onCancel()}
+          placeholder="e.g. Dental appointment reminders"
+          className="w-full rounded-md border border-slate-300 px-2.5 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+        />
+        <p className="mt-1.5 text-xs text-slate-500">You can rename it any time; its link stays the same.</p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!name.trim() || busy}
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {busy ? "Creating…" : "Create"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
