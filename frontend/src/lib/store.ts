@@ -6,6 +6,7 @@
 
 import { create } from "zustand";
 import { api, ApiError } from "./api";
+import { missingPositions } from "./layout";
 import { applyOp, describeOp, type Op } from "./operations";
 import type { Agent, Issue } from "./types";
 
@@ -90,10 +91,13 @@ export const useEditor = create<EditorState>((set, get) => {
       try {
         const record = await api.getAgent(agentId);
         lastCoalesce = null;
+        // Nodes without a position (e.g. hand-written JSON) are laid out as part
+        // of loading, not as an edit: the layout is stored with the next save.
+        const agent = applyOp(record.agent, { type: "moveNodes", positions: missingPositions(record.agent) });
         set({
           version: record.version,
-          draft: record.agent,
-          saved: record.agent,
+          draft: agent,
+          saved: agent,
           issues: record.issues,
           loading: false,
         });
