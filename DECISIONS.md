@@ -24,6 +24,7 @@ This file records the project's architectural decisions (ADs): decisions that ar
 | AD-10 | A transition without the data it requires is refused, and the call stays in its node |
 | AD-11 | ProsperO, the copilot, specialises in voice agents for the medical field |
 | AD-12 | Operations exist in Python and TypeScript, held identical by shared test cases |
+| AD-13 | ProsperO is a stateless tool loop on the backend that edits through operations and can't finish with errors |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -378,6 +379,44 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 - *"The TypeScript side has no schema."* True. It doesn't need one: the editor builds operations in code, where TypeScript's types check them. Schemas live where operations arrive as untrusted JSON, which is the backend.
 
 **Revisit when** there are many more operations, or a third consumer (a CLI, another service) needs them; then generating implementations from one definition would pay off.
+
+---
+
+## AD-13: ProsperO is a stateless tool loop on the backend that edits through operations and can't finish with errors
+
+**Decision.** ProsperO (`backend/prospero/`) runs one turn per user message at `POST /api/copilot`:
+- **Input:** the agent as it currently stands (none for a new agent), the chat so far, and the new message. The server keeps nothing between turns.
+- **Tools:** the agent operations, generated from the operation registry (AD-12), minus `moveNodes` (layout is the editor's job) and `replaceAgent` (no wholesale rewrites). Plus `validate`, which runs the shared validator (AD-2), and `finish(summary, assumptions)`.
+- **The loop:** the LLM proposes edits; the server applies each one to a working copy with `apply_op`. A misfit is refused and the exact error goes back to the LLM. `finish` is refused while the agent has errors. A turn stops after 40 LLM calls.
+- **Output:** a stream of server-sent events: every applied edit (`op`), validation results, notes, and finally `done` (summary, assumptions, final agent), `reply` (a question for the user) or `error`.
+- **The model** is OpenAI, `gpt-5.5` by default, set with `PROSPERO_MODEL`. The system prompt (`prompt.py`) carries the agent format and the medical defaults from AD-11.
+
+**Product argument.**
+- **The user watches the agent being built,** edit by edit, instead of waiting for a finished blob, and every edit has a readable label.
+- **What ProsperO hands over is runnable.** It can't finish with errors, so the user never receives an agent the voice runtime would reject.
+- **No lost conversations.** Because turns are stateless, a backend restart or a second browser tab can't lose or corrupt a session.
+
+**AI angle.**
+- **Small edits instead of one big document.** Producing many small, checked edits is more reliable for an LLM than writing a whole JSON agent in one go, and each mistake is caught at the edit that made it.
+- **Self-correction with precise feedback.** Refused edits and validation results come back as exact messages ("No node named 'verify_patient'."), so the model fixes its own errors within the turn.
+- **The agent the LLM sees is the real one.** It gets the current agent, without canvas positions, on every turn, so edits in a later turn ("add a cancellation path") apply to what's really there, including the user's own changes.
+- **The LLM is swappable.** The loop takes the LLM call as a function. Tests drive it with a scripted fake (12 tests, no cost, deterministic), and changing provider or model touches one function.
+
+**Alternatives considered.**
+- **Generating the whole agent JSON in one structured response.** Rejected: no live drawing, harder to review, and one mistake means regenerating everything.
+- **Running the loop in the browser.** Rejected: it would expose the API key, and the backend owns validation.
+- **Keeping sessions on the server.** Rejected for now: stateless turns are simpler and survive restarts. The cost is resending the agent each turn, a few thousand tokens.
+- **Claude instead of OpenAI.** The user chose OpenAI, which reuses the existing key. The loop is provider-neutral apart from `openai_complete`.
+
+**Cost of reversal.** Medium. The event format is the contract with the editor, and the operation-based approach shapes how proposals are reviewed.
+
+**Likely challenges.**
+- *"It's slow."* The first real build took 37 seconds for 25 edits, and the model sent all of them in one reply. Streaming the LLM's output so edits arrive as they're generated, or a faster model through `PROSPERO_MODEL`, would cut the wait.
+- *"Valid isn't the same as good."* True. Validation guarantees the agent runs, not that it handles callers well. The medical defaults in the prompt help; regression tests from recorded calls (Phase 2 backlog) are the real measure.
+- *"Anyone who reaches the endpoint spends your OpenAI credit."* As with test calls (AD-5), fine locally; a deployment needs sign-in and rate limits.
+- *"The model could ignore the medical defaults."* It followed them in the first real build, but nothing enforces them yet. Medical validation rules (AD-11) are the planned backstop.
+
+**Revisit when** turns get slow enough to hurt the experience (stream the LLM's output), conversations get long (summarise history), or several people work on one agent (server-side sessions).
 
 ---
 
