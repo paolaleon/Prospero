@@ -19,3 +19,13 @@ dependencies = [
 # This is an application (flat modules: bot.py + agent_builder/), not a
 # distributable library — manage the environment, don't build/install a package.
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+# The app's modules (bot.py, api.py, agent_builder/) sit at the backend root.
+pythonpath = ["."]
+testpaths = ["tests"]

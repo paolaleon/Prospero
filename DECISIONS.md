@@ -1,0 +1,320 @@
+# Architectural Decisions
+
+This file records the architectural decisions (ADs) built into the project so far: decisions that are hard to undo and that shape how the system works. Each one is written to be defended from an AI product engineer's point of view:
+
+- **Decision**: what we chose.
+- **Product argument**: why it helps the people building and testing agents.
+- **AI angle**: how it affects LLM reliability, observability or the Phase 2 copilot.
+- **Alternatives considered**: what we could have done instead.
+- **Cost of reversal**: how hard it would be to undo.
+- **Likely challenges**: what a reviewer is likely to push on, with an answer for each.
+- **Revisit when**: the signal that it's time to change it.
+
+| AD | Architectural decision |
+|----|------------------------|
+| AD-1 | The canvas layout is stored in the agent JSON |
+| AD-2 | Validation rules live in one place, in the backend |
+| AD-3 | `AgentBuilder` reports transitions through a callback |
+| AD-4 | Agents are stored as immutable versions in JSON files |
+| AD-5 | A test call carries the agent definition with it |
+| AD-6 | Live call state reaches the browser over RTVI |
+| AD-7 | Every call is recorded with the agent it ran |
+| AD-8 | The frontend and backend are separate apps that only communicate over HTTP |
+| AD-9 | Every edit to an agent is a named, serialisable operation |
+| AD-10 | A transition without the data it requires is refused, and the call stays in its node |
+
+The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
+
+---
+
+## AD-1: The canvas layout is stored in the agent JSON
+
+**Decision.** Each node has an optional `position: {x, y}`. The voice runtime ignores it.
+
+**Product argument.** One file is the whole agent. It can be exported, shared and committed without a layout file kept beside it that can fall out of sync. Renaming a node doesn't break the layout, because the position belongs to the node rather than to a map keyed by its name.
+
+**AI angle.** It's neutral to slightly negative. The Phase 2 copilot reads and writes this format, and positions are tokens that mean nothing to the LLM.
+
+**Alternatives considered.**
+- A layout file stored next to the agent, keyed by node name. Rejected because it breaks on rename and can fall out of sync.
+- Always laying the graph out automatically, with nothing stored. Rejected because users lose the arrangement they chose.
+
+**Cost of reversal.** Low. It's an optional field, so a short script could move positions into a separate file.
+
+**Likely challenges.**
+- *"You've mixed editor data into your runtime config."* True, but it's optional and the runtime ignores it. The agent format is the product's artifact, not just the runtime's input.
+- *"The copilot will waste tokens on coordinates, or move nodes around."* Remove positions before sending an agent to the LLM, add them back to unchanged nodes afterwards, and lay out new nodes automatically.
+
+**Revisit when** a second client needs a different layout (for example a mobile view), or the copilot's token budget gets tight.
+
+---
+
+## AD-2: Validation rules live in one place, in the backend
+
+**Decision.** `validate_agent` is the only copy of the rules. The editor (`/api/validate`), the call request (`POST /start`, see AD-5) and every way of creating an `AgentBuilder` all use it. Each issue says how serious it is and which node and edge it belongs to.
+
+**Product argument.** The editor and the runtime can't disagree. If the canvas shows no errors, the call will build. The issues point at a specific node and edge, so the UI can mark the exact problem on the graph instead of showing a vague "invalid agent".
+
+**AI angle.** This is the strongest decision for Phase 2.
+- **Generate → validate → repair.** The copilot's output is checked against the same rules as a human's edits, and the errors are machine-readable and specific ("Transition `select_time` targets unknown node `confirmation`"). They can go straight back to the LLM so it fixes its own output. The repair loop is ready before Phase 2 starts.
+- **Rules written for LLM behaviour.** A transition with no description is an *error*, not a warning, because the description is the only thing the LLM uses to decide when to take that edge. Function names must follow OpenAI's tool-name rules, which would otherwise fail at call time rather than at edit time.
+- **Errors and warnings are separate.** Errors block a run. Warnings (unreachable nodes, dead ends, no reachable end node) are likely design mistakes that still run, so users and the copilot can work through a half-built graph.
+
+**Alternatives considered.**
+- Re-implementing the rules in TypeScript for instant feedback. Rejected because two copies drift apart.
+- JSON Schema only. Rejected because it can't express checks across the graph (reachability, unknown targets, duplicate names).
+- Validating only when the agent is built (the old behaviour). Rejected because it stopped at the first error and only checked two things.
+
+**Cost of reversal.** Medium. The UI and the copilot will both rely on the issue format (severity, node, edge).
+
+**Likely challenges.**
+- *"A round trip to the server on every edit is slow."* It runs locally, is debounced, and is a pure function that takes microseconds. If it ever mattered, the same Python could run in the browser, but it hasn't been needed.
+- *"Can something unvalidated still be compiled?"* No. The `AgentBuilder` constructor validates, so creating a builder directly from an `AgentConfig` is covered as well as `from_dict` and `from_json`. `from_dict` also checks the raw dict first, so a missing key gives a readable error instead of a `KeyError`.
+- *"It doesn't check `pre_actions` / `post_actions`."* True. They're passed through to Pipecat unchecked, and the editor won't expose them beyond raw JSON.
+- *"It checks structure, not quality."* Correct. A valid agent can still be a bad conversation. That's what evaluations are for (see Gaps).
+
+**Revisit when** you add new kinds of nodes or edges (conditional edges, tool-call nodes), or the copilot needs quality checks such as "this prompt is too long to read aloud".
+
+---
+
+## AD-3: `AgentBuilder` reports transitions through a callback
+
+**Decision.** `AgentBuilder` has an optional `on_transition` attribute: an async `(from_node, function, to_node, args)` listener. It's called each time a transition is taken, just before the next node starts. Whoever runs the call assigns it (`builder.on_transition = listener`), because the listener usually needs objects that only exist once the call has started; `bot.py` gives each call its own, bound to that call's recorder. If it fails, the error is logged and the call carries on.
+
+**Product argument.** Users can see where the conversation is in the graph as it happens. The builder doesn't know who's listening, so the same hook can later feed call logs, analytics or alerts without changes to the builder.
+
+**AI angle.** It's the foundation for observability. Which path the agent took (`greeting → collect_details → offer_times → confirm`) is the unit that analytics and evaluations measure: "Did the agent reach `confirm`?", "How often does it loop back?", "Which edge does the LLM take wrongly?". Without it, LLM routing decisions are invisible.
+
+**Alternatives considered.**
+- Changing Pipecat Flows' `FlowManager` to raise an event. Rejected because we'd have to maintain a modified copy of a dependency.
+- Working out transitions afterwards from the LLM's function-call frames. Rejected because it's fragile and depends on Pipecat's internals.
+
+**Cost of reversal.** Low. It's one optional parameter.
+
+**Likely challenges.**
+- *"Only the live UI uses it."* That's deliberate. Storing call logs later is purely additive.
+- *"It runs inside the transition, so a slow listener slows the call down."* True. Anything heavier than sending a message should go on a queue instead of being awaited inside the transition.
+
+**Revisit when** you add call logs (put a queue in front) or more node types (it may need to report more than transitions).
+
+---
+
+## AD-4: Agents are stored as immutable versions in JSON files
+
+**Decision.** A save never overwrites. Each one appends `backend/agents/{id}/versions/{n}.json`, which holds the agent plus `version`, `created_at`, a `message` and a `source` (`human`, `copilot` or `restore`). The latest version is the current agent. Rolling back appends a copy of an old version rather than deleting anything. A save sends the `base_version` it started from, and if someone saved in between, it's refused with `409`. All storage lives in `backend/store.py`, and `/api/agents` and `/api/agents/{id}/versions` sit on top of it.
+
+**Product argument.**
+- Nothing to set up or run.
+- Agents can be diffed, reviewed in a pull request and committed, which treats the agent as code.
+- Users get history and one-click rollback.
+- A stale editor tab can't silently overwrite newer work.
+
+**AI angle.** This decision exists for the copilot.
+- **Every AI edit is reviewable and reversible.** A copilot change becomes a version tagged `source: "copilot"` with a message explaining it ("Shortened the greeting after 3 callers hung up"). It can be compared with the previous version and undone in one step. Users won't let an AI edit their production agent without that.
+- **Calls point at exact versions** (AD-7). "Version 4 fixed the drop-off seen in version 3" is a claim the data can back up, which is the basis for measuring whether an iteration helped.
+
+**Alternatives considered.**
+- One mutable file per agent (the previous form of this decision). Replaced because it had no history, no rollback and no protection against stale writes.
+- Using git itself as the version store. Rejected because it ties the product to a repository on disk and is awkward to expose through an API.
+- SQLite or Postgres. Rejected for now: it's infrastructure the challenge doesn't need yet.
+- A draft and publish workflow (like Retell's). Deferred: every save is a version for now. A "published" pointer for production traffic can be added later without changing the storage.
+
+**Cost of reversal.** Low. All storage is in `store.py`, so moving to a database changes one module, not the API or the frontend.
+
+**Likely challenges.**
+- *"Every save keeps a full copy. Won't that grow without limit?"* An agent is a few KB, so thousands of versions are a few MB. Diffs between versions are computed on demand rather than stored.
+- *"There are no tenants, no sign-in, no permissions."* Out of scope for Phase 1. It would come with the move to a database.
+- *"Deleting an agent deletes its history."* True, and deliberate for a dev tool. A production system would archive instead.
+
+**Revisit when** you need to tell production traffic apart from work in progress (add a published pointer), or you host it for more than one team (database and tenants).
+
+---
+
+## AD-5: A test call carries the agent definition with it
+
+**Decision.** The `/start` request body decides which agent a call runs (`store.resolve_call_agent`), in this order:
+
+1. An inline `agent`: an unsaved draft. The editor also sends the `agent_id` it's a draft of, so the call record (AD-7) is linked to that agent, with `agent_version` set to `null`.
+2. A saved `agent_id`, at a given `version` or the latest.
+3. Neither: `AGENT_FLOW`.
+
+The editor sends the agent by reference (`agent_id` and `version`) when there are no unsaved changes, so the call record is tied to that version. Otherwise it sends the draft itself. A middleware (`StartValidationMiddleware` in `backend/call_guard.py`) checks that agent before the runner creates a session: an agent with errors is refused with `422` and its issues, and an unknown `agent_id` gets `404`.
+
+**Product argument.** This is the iteration loop that matters most for a voice-agent builder: change a prompt, then call within seconds, with no save, deploy or restart. Each call is independent, so you could compare two versions of an agent side by side.
+
+**AI angle.** Prompt engineering is trial and error, so the faster the loop, the better the agent. The loop is also ready for the copilot: it suggests an edit, the user calls the draft straight away, and only then decides to keep it.
+
+**Alternatives considered.**
+- Saving before every call and running only saved agents. Rejected because it's slower and fills the store with half-finished agents.
+- Restarting the bot with a new `AGENT_FLOW` (the original setup). Rejected because it's far too slow.
+
+**Cost of reversal.** Low. Allowing only saved versions is a one-line change in `store.resolve_call_agent`.
+
+**Likely challenges.**
+- *"Anyone who can reach the backend can run any prompt on your OpenAI and ElevenLabs keys."* **This is the main security and cost risk.** Acceptable for a local tool. In production, require sign-in, run only saved and validated versions, and rate-limit calls and minutes per user.
+- *"What happens if the draft is invalid?"* The call is refused at `/start` with the same issues the editor shows, before any session or WebRTC connection exists. Without that check, the bot would only fail to build after the connection was up, and the client would wait for a call that never starts.
+- *"Why a middleware rather than your own endpoint?"* `/start` belongs to the Pipecat runner, which keeps its sessions internally. Putting the check in front of it keeps the runner's own behaviour and its upgrades untouched.
+- *"Can a client get round the check?"* Yes, by posting straight to the runner's `/api/offer` with an agent inside the request. The bot still refuses to build and logs the error, but that client gets no explanation. The editor never uses that path. For a deployment, only allow saved agents (see the cost risk above).
+- *"The draft is sent in full on every call."* Agents are a few KB, so it doesn't matter.
+
+**Revisit when** the tool is deployed beyond localhost, or calls start to cost real money.
+
+---
+
+## AD-6: Live call state reaches the browser over RTVI
+
+**Decision.** `bot.py` sends two kinds of RTVI server message over the call's existing WebRTC connection:
+- `{"type": "flow.node", ...}`: once when the client is ready (with the start node), and after every transition (with `from_node`, `function` and the collected `args`). The editor uses these to light up the active node and the edges taken.
+- `{"type": "call.event", "event": ...}`: every event the call recorder writes (user turns, agent turns, transitions), as it's written (AD-7).
+
+The live transcript is built from `call.event`, not from the SDK's own transcription callbacks, so what the editor shows during a call is exactly what gets saved.
+
+**Product argument.** Users can debug by watching. The active node lights up, the data each step collected appears, and the transcript lines up with the path through the graph. That trust is what users of ElevenLabs Agents and Retell rely on.
+
+**AI angle.** It explains LLM decisions. When the agent misroutes, the user sees which edge the model chose and with what arguments, and can fix that edge's description on the spot. That turns a black box into something the user can debug.
+
+**Alternatives considered.**
+- A separate WebSocket or a polling endpoint for call state. Rejected because it's an extra channel and needs its own session matching.
+- Showing only the transcript. Rejected because users can't see the routing decisions.
+
+**Cost of reversal.** Medium. The frontend will depend on the message format.
+
+**Likely challenges.**
+- *"Nothing is stored when the call ends."* It is: the same transitions are written to the call record (AD-7). RTVI is only the live view.
+- *"It sends patient data (names, reasons for visit) to the browser."* **This is a healthcare compliance point.** For a local test tool, the person testing is the caller. In production, transcripts and collected fields are protected health information: they need encryption, retention limits and access controls, and may need masking in shared views.
+- *"The agent's line only appears once it has finished speaking."* True. Events are sent when a turn is recorded. Streaming the text word by word from the SDK's callbacks would feel livelier, but it would be a second version of the transcript that could differ from the saved record.
+- *"It only works with Pipecat clients."* True, and acceptable because the editor is a Pipecat client. Telephony calls wouldn't get the live view, but they would get call logs.
+
+**Revisit when** you add phone calls or real patient traffic.
+
+---
+
+## AD-7: Every call is recorded with the agent it ran
+
+**Decision.** `bot.py` records each call on the server (`CallRecorder`) and writes it to `backend/calls/{id}.json` when the call ends, whether the agent hung up or the caller did. The record is self-contained:
+- **Agent:** a snapshot of the agent it ran, plus `agent_id` and `agent_version` (`null` for an unsaved draft).
+- **Timeline:** user turns, agent turns (marked if interrupted), transitions (with their arguments) and refused transitions (AD-10).
+- **Outcome:** `final_node`, the merged `collected` data, and `ended_by` (`agent` if it finished on an end node, otherwise `caller`).
+- **Source:** `test`, `production` or `mock`.
+
+Records are read through `/api/calls`. The client is told the call id when it connects (an RTVI `call.started` message). The `calls/` folder is gitignored.
+
+**Product argument.** Every test call becomes something you can come back to. Users can replay what happened, see where callers dropped off (`ended_by: caller` before an end node), and compare calls across versions. Recording on the server, not in the browser, means production calls get recorded in exactly the same format even though they never pass through the editor.
+
+**AI angle.** This is the copilot's raw material for the "production iteration" workflow.
+- **Calls are evidence tied to nodes.** Each turn falls between known transitions, so an issue ("the agent offered times before asking the reason for the visit") can be pinned to a node and edge. The copilot can then propose a targeted edit instead of rewriting the prompt.
+- **Snapshots keep evidence readable.** A call stays interpretable after the agent changes or nodes are renamed, because it carries the agent it ran. That's why node names can stay as identifiers without separate ids.
+- **Ready for issue detection.** An LLM pass over the records can flag likely problems (loops, drop-offs, wrong transitions, missing data) without anyone listening to calls. That's the "detection is a burden" part of the brief.
+- **Mock calls use the same format** (`source: "mock"`), so the copilot's loop can be shown without real call data.
+
+**Alternatives considered.**
+- Recording in the browser from the RTVI events. Rejected because production and phone calls never pass through the editor.
+- Storing only a reference to the agent version. Rejected because drafts have no version, and a call would become unreadable if a version were ever deleted.
+- Using Pipecat's audio recording. Deferred: text and structure are what the copilot reasons over. Audio can be added for tone and latency analysis.
+
+**Cost of reversal.** Medium. The copilot and the call-history views will depend on the record format.
+
+**Likely challenges.**
+- *"Transcripts of a healthcare line are protected health information."* Yes. That's why `calls/` is gitignored. In production it needs encryption, retention limits, access controls, and masking before anything goes to an LLM.
+- *"Turns have no audio timing or latency."* True. Timestamps are when each event was recorded, not when audio played. Latency analysis would need Pipecat's metrics added to the record.
+- *"A record is only written when the call ends."* If the process crashes mid-call, that call is lost. Acceptable for now. Appending events to the file as they happen would fix it.
+
+**Revisit when** you add real traffic (privacy controls), need latency or audio analysis, or call volume outgrows one folder of files (database).
+
+---
+
+## AD-8: The frontend and backend are separate apps that only communicate over HTTP
+
+**Decision.** The editor lives in `frontend/` (React, TypeScript, React Flow) with its own dependencies, build and dev server. The backend serves JSON and the WebRTC call endpoints only, never UI files. The frontend finds the backend through one setting, `VITE_API_URL`. The Pipecat runner already allows cross-origin requests, so no backend changes were needed. The only contracts between the two are the HTTP API and the agent JSON format.
+
+**Product argument.** Each side can be built, deployed and changed without touching the other. The UI ships as static files to any host, and the voice backend scales with the number of calls, not with editor traffic.
+
+**AI angle.** Because the API is the only way in, the Phase 2 copilot gets the same capabilities a human has: it can run as a backend service, a CLI or an MCP tool and call `/api/agents`, `/api/validate` and `/api/calls` directly. Nothing the copilot needs is hidden inside the UI.
+
+**Alternatives considered.**
+- Having the backend serve the built frontend. Rejected because it ties backend releases to frontend builds.
+- A no-build page loading libraries from a CDN. Rejected because it's harder to maintain as the editor grows.
+- A full-stack framework such as Next.js. Rejected because the backend is Python, and a second server layer would add nothing.
+
+**Cost of reversal.** Low to medium. Serving `frontend/dist` from the backend would take a few lines, but undoing the separation would mean merging two release cycles.
+
+**Likely challenges.**
+- *"Two processes to run in development."* True. Each is one command: `npm run dev` in `frontend/` and `python bot.py` in `backend/`.
+- *"`allow_origins=*` is permissive."* True, and it's the runner's default. A deployment should restrict it to the editor's origin with the runner's `--allowed-origins` option.
+
+**Revisit when** the editor is deployed (restrict origins, add sign-in).
+
+---
+
+## AD-9: Every edit to an agent is a named, serialisable operation
+
+**Decision.** The editor's draft only changes through `applyOp(agent, op)` in `frontend/src/lib/operations.ts`. That function is pure and is the single place where an agent is modified. An `Op` is plain data: `addNode`, `renameNode`, `updateEdge`, `moveNodes` and so on, each with a readable label from `describeOp`. The canvas, the inspector, JSON import and undo/redo all dispatch operations through the store (`frontend/src/lib/store.ts`). Operations whose meaning spans the graph handle every reference: renaming a node rewrites the start node and every edge that targets it, and deleting a node keeps the transitions that pointed at it but clears their target, so validation flags each one.
+
+**Product argument.**
+- One undo/redo history, with readable labels, covers every kind of edit.
+- Typing in a field becomes a single undo step instead of one per keystroke.
+- No part of the UI can leave the graph inconsistent, for example a rename that breaks the edges pointing at a node.
+
+**AI angle.** This is how the copilot plugs into the editor.
+- **One vocabulary for people and the AI.** The copilot doesn't return a whole new JSON for the agent; it proposes a list of operations ("rename `offer_times` to `offer_slots`", "edit the description of `select_time`"). Small, targeted edits are easier for an LLM to get right than regenerating the whole document, and a reviewer can read them.
+- **Reviewable by construction.** A proposal is a list of labelled operations that can be previewed on the canvas, then accepted or rejected one by one. It becomes a version with `source: "copilot"` (AD-4).
+- **Safe to apply.** `applyOp` refuses operations that don't fit the agent (an unknown node, a name collision), so a hallucinated edit fails loudly instead of corrupting the graph. Validation (AD-2) then catches anything that's structurally wrong.
+
+**Alternatives considered.**
+- Letting each component edit the agent object directly. Rejected because there'd be no history, no labels, and nothing a copilot could share.
+- JSON Patch (RFC 6902). Rejected as the main vocabulary because paths like `/nodes/3/edges/1` mean nothing to a reviewer and break when nodes move. Patches could still be produced from operations if needed.
+- Having the copilot regenerate the whole agent JSON. Rejected because it costs more tokens, drifts unpredictably, and is hard to review.
+
+**Cost of reversal.** High once the copilot exists. Its tool definitions would be these operations.
+
+**Likely challenges.**
+- *"The operations only exist in the frontend, so the copilot can't use them from the backend."* True today. The backend stores whole versions. For a server-side copilot, port `applyOp` to Python (it's about 100 lines and the tests document its behaviour), or let the copilot return operations that the editor applies.
+- *"Undo history is lost on reload."* True. It's per session. Versions (AD-4) are the long-term history.
+
+**Revisit when** you build the copilot's tool interface (decide where `applyOp` runs), or need edits from several people at once (operations are the basis for merging).
+
+---
+
+## AD-10: A transition without the data it requires is refused, and the call stays in its node
+
+**Decision.** Before taking a transition, its handler (`check_args` in `backend/agent_builder/builder.py`) checks the arguments the LLM supplied against the edge's own schema:
+- every **required** field must be present and not blank;
+- any field with **allowed values** (`enum`) must use one of them.
+
+If a check fails, the transition is **refused**:
+- the call stays in the current node and nothing is saved to the call's state;
+- the handler returns an error to the LLM ("Missing required field 'reason'. Ask the caller for it, then call this function again."). Pipecat Flows runs the LLM again straight away, so the agent asks the caller for what's missing;
+- an `on_transition_refused` listener is notified. `bot.py` records it as a `refused` event in the call record (AD-7) and streams it to the editor, where it shows in amber in the transcript.
+
+**Product argument.** A field marked "Required" in the editor now means what it says. Without this, an agent could move on to `offer_times` without a name, and the booking would fail later, or never, with nothing in the transcript to explain why. Builders get the behaviour they configured, and see it in the transcript when the model tries to cut corners.
+
+**AI angle.**
+- **The schema is a request, not a guarantee.** OpenAI's models usually respect a tool's required fields, but nothing forces them to: without strict mode, a model can leave a field out, send an empty string, or choose a value outside the allowed list. This turns those failures into a recoverable step instead of corrupt data.
+- **Self-correction instead of failure.** The refusal is phrased as an instruction the LLM can act on, so the usual outcome is one extra question to the caller, not a broken call.
+- **A signal for Phase 2.** Each refusal is recorded with its node, function and problems. Several refusals in the same node across calls mean its instructions don't make the model gather the data, which is the kind of issue the copilot should detect and fix (for example, by adding "ask for the reason for the visit" to the node).
+
+**Alternatives considered.**
+- OpenAI's strict structured outputs. Not used for now: they constrain the format, but a model can still fill a required field with an invented value, and they're specific to OpenAI. Our check runs the same way for any LLM provider. The two could also be combined later.
+- Refusing only in the editor, through validation. Not possible: whether the data is present is only known during the call.
+- Transitioning anyway and flagging the problem afterwards. Rejected because the call would continue without data that later nodes rely on.
+
+**Cost of reversal.** Low. Removing the check restores the previous behaviour; recorded `refused` events would simply stop appearing.
+
+**Likely challenges.**
+- *"Can the call get stuck asking again and again?"* In principle, if the caller never gives the information. There's no limit yet on refusals per node; the caller can still hang up, and the repeated refusals show up in the record. A limit, or a fallback edge after N refusals, is part of gap 3.
+- *"It doesn't catch invented values."* Correct. "Unknown" or a misheard name passes, because it's a non-empty string. Detecting that needs checks specific to each field (e.g. a date format) or an LLM review of the call afterwards.
+- *"Only required fields and allowed values are checked, not types."* True. A number sent as text, for example, isn't refused. Type checks could be added to `check_args` the same way.
+
+**Revisit when** you add stricter field types (dates, phone numbers), when a limit on refusals per node is needed, or if strict structured outputs become simple to enable through Pipecat.
+
+---
+
+## Gaps to prepare for
+
+These aren't decisions yet. They're the questions an AI product reviewer is most likely to ask.
+
+1. **Reviewing AI edits.** Versions and rollback exist (AD-4). Still missing is a visual diff of a proposed change on the canvas, with accept and reject, before it becomes a version.
+2. **Evaluations.** Calls are recorded (AD-7). Still missing are scripted test conversations with expected paths ("a caller who wants to cancel should reach `cancel_confirm`"), run after every change to catch regressions. (AD-3, AD-7)
+3. **Routing reliability.** Partly addressed: a transition missing required data, or with a value outside its allowed list, is refused and the LLM asks again (AD-10). Still missing: a fallback if the LLM never calls a function or picks the wrong edge, global edges available from every node (such as "talk to a human"), a limit on turns per node, and detecting plausible but invented values. (AD-2, AD-3, AD-10)
+4. **Running arbitrary prompts on shared keys.** Sign-in, rate limits and per-user quotas before anything is deployed. (AD-5)
+5. **Patient data in transcripts and collected fields.** Encryption, retention limits, access controls and masking before real traffic. (AD-6, AD-7)

@@ -10,49 +10,79 @@
 #
 
 import json
+from dataclasses import asdict
 from pathlib import Path
-from typing import Union
+from typing import Awaitable, Callable, Optional, Union
 
 from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 
 from .schema import AgentConfig, Edge, Node
+from .validation import validate_agent
+
+# Called each time a transition is taken, just before the next node starts:
+# (from_node, function, to_node, collected_args). bot.py uses it to record the
+# call and stream its position in the graph to the editor.
+TransitionHook = Callable[[str, str, str, dict], Awaitable[None]]
+
+# Called when the LLM tries a transition without the data it requires, so the
+# call stays where it is: (node, function, args, problems).
+RefusalHook = Callable[[str, str, dict, list], Awaitable[None]]
+
+
+def check_args(edge: Edge, args: dict) -> list[str]:
+    """What's wrong with the arguments the LLM gave for `edge`, if anything.
+
+    The edge's schema is sent to the LLM, but nothing makes the model obey it:
+    it can leave out a required field, send an empty one, or pick a value that
+    isn't allowed. Those transitions are refused instead of moving on without
+    the data. (A plausible but invented value can't be detected here.)
+    """
+    problems = []
+    for name in edge.required:
+        value = args.get(name)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            problems.append(f"Missing required field '{name}'.")
+    for name, schema in edge.properties.items():
+        allowed = schema.get("enum") if isinstance(schema, dict) else None
+        if allowed and name in args and args[name] not in allowed:
+            options = ", ".join(str(a) for a in allowed)
+            problems.append(f"Field '{name}' must be one of: {options} (got {args[name]!r}).")
+    return problems
+
+
+def _raise_if_invalid(data: dict) -> None:
+    errors = [i.message for i in validate_agent(data) if i.severity == "error"]
+    if errors:
+        raise ValueError("Invalid agent: " + " ".join(errors))
 
 
 class AgentBuilder:
     """Builds a runnable Pipecat Flows graph from a declarative AgentConfig."""
 
     def __init__(self, config: AgentConfig):
+        # Every way of creating a builder validates, so nothing unrunnable compiles.
+        _raise_if_invalid(asdict(config))
         self.config = config
+        # Optional listeners, set by whoever runs the call (they usually need
+        # objects that only exist once the call has started). Assign them before
+        # the first transition: `builder.on_transition = my_listener`.
+        self.on_transition: Optional[TransitionHook] = None
+        self.on_transition_refused: Optional[RefusalHook] = None
         self._nodes_by_name = {n.name: n for n in config.nodes}
-        self._validate()
 
     # ---- loading -----------------------------------------------------------
     @classmethod
     def from_dict(cls, data: dict) -> "AgentBuilder":
+        # Validate the raw dict too, so malformed input (e.g. a missing key) gives a
+        # readable error instead of a KeyError from the dataclass constructors.
+        _raise_if_invalid(data)
         return cls(AgentConfig.from_dict(data))
 
     @classmethod
     def from_json(cls, path: Union[str, Path]) -> "AgentBuilder":
         data = json.loads(Path(path).read_text())
         return cls.from_dict(data)
-
-    # ---- validation --------------------------------------------------------
-    def _validate(self) -> None:
-        names = set(self._nodes_by_name)
-        if not names:
-            raise ValueError("Agent has no nodes.")
-        if self.config.initial_node not in names:
-            raise ValueError(
-                f"initial_node '{self.config.initial_node}' is not a defined node."
-            )
-        for node in self.config.nodes:
-            for edge in node.edges:
-                if edge.target not in names:
-                    raise ValueError(
-                        f"Edge '{edge.function}' in node '{node.name}' targets "
-                        f"unknown node '{edge.target}'."
-                    )
 
     # ---- compilation -------------------------------------------------------
     def build_initial_node(self) -> NodeConfig:
@@ -64,7 +94,7 @@ class AgentBuilder:
             "name": node.name,
             "role_message": node.role_message or self.config.persona,
             "task_messages": node.task_messages,
-            "functions": [self._make_edge_function(edge) for edge in node.edges],
+            "functions": [self._make_edge_function(node, edge) for edge in node.edges],
         }
         if node.pre_actions:
             node_config["pre_actions"] = node.pre_actions
@@ -75,12 +105,22 @@ class AgentBuilder:
             node_config["post_actions"] = [{"type": "end_conversation"}]
         return node_config
 
-    def _make_edge_function(self, edge: Edge) -> FlowsFunctionSchema:
+    def _make_edge_function(self, node: Node, edge: Edge) -> FlowsFunctionSchema:
         async def handler(args: dict, flow_manager: FlowManager):
+            problems = check_args(edge, args)
+            if problems:
+                # Stay in this node. Returning no next node makes Flows hand this
+                # result straight back to the LLM, which can ask the caller again.
+                logger.info(f"[{edge.function}] refused in {node.name}: {problems} | args: {args}")
+                await _notify(self.on_transition_refused, node.name, edge.function, args, problems)
+                error = " ".join(problems) + " Ask the caller for it, then call this function again."
+                return {"status": "error", "error": error}, None
+
             # Persist what the caller gave us so later nodes can use it.
             flow_manager.state.update(args)
             logger.info(f"[{edge.function}] -> {edge.target} | collected: {args}")
             next_node = self._make_node(self._nodes_by_name[edge.target])
+            await _notify(self.on_transition, node.name, edge.function, edge.target, args)
             return {"status": "success", **args}, next_node
 
         return FlowsFunctionSchema(
@@ -90,3 +130,13 @@ class AgentBuilder:
             required=edge.required,
             handler=handler,
         )
+
+
+async def _notify(listener, *args) -> None:
+    """Call an optional listener; observability must never break the call."""
+    if listener is None:
+        return
+    try:
+        await listener(*args)
+    except Exception as e:
+        logger.warning(f"{getattr(listener, '__name__', 'listener')} failed: {e}")

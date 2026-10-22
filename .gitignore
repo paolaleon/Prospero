@@ -21,6 +21,7 @@ env/
 
 # ---- Node / frontend (Phase 1 UI later) ----
 node_modules/
+*.tsbuildinfo
 .next/
 dist/
 *.log
@@ -31,3 +32,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# ---- Recorded calls (transcripts can contain caller data) ----
+backend/calls/
