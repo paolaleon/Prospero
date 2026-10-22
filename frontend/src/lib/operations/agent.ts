@@ -3,7 +3,7 @@
 import type { Agent } from "../types";
 import { findNode, type OpDefs } from "./registry";
 
-type AgentFields = Partial<Pick<Agent, "name" | "persona" | "voice_id" | "model">>;
+type AgentFields = Partial<Pick<Agent, "name" | "persona" | "voice_id" | "model" | "languages">>;
 
 export type AgentOp =
   | { type: "updateAgent"; patch: AgentFields }

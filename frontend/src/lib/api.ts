@@ -10,6 +10,7 @@ import type {
   VersionRecord,
   VersionSource,
   Voice,
+  LanguageOption,
 } from "./types";
 
 export const API_URL: string = import.meta.env.VITE_API_URL ?? "http://localhost:7860";
@@ -83,4 +84,6 @@ export const api = {
     request<{ issues: Issue[] }>("/api/validate", { method: "POST", body: json(agent) }),
 
   voices: () => request<Voice[]>("/api/voices"),
+
+  languages: () => request<LanguageOption[]>("/api/languages"),
 };

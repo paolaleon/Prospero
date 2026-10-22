@@ -45,6 +45,8 @@ export interface Agent {
   persona?: string;
   voice_id?: string;
   model?: string;
+  /** ISO 639-1 codes, default first; English only when absent (AD-15). */
+  languages?: string[];
 }
 
 export interface Issue {
@@ -120,6 +122,11 @@ export interface CallRecord extends Omit<CallSummary, "turns" | "agent_name"> {
   agent: Agent;
   collected: Record<string, unknown>;
   events: CallEvent[];
+}
+
+export interface LanguageOption {
+  code: string;
+  name: string;
 }
 
 export interface Voice {
