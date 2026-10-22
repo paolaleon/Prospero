@@ -11,20 +11,24 @@
 #   /api/calls[/{id}]                      recorded calls
 #   /api/validate                          structured errors/warnings for a draft agent
 #   /api/voices                            ElevenLabs voices for the voice picker
+#   /api/copilot                           one ProsperO turn, streamed as server-sent events
 #
 # register_routes also installs the call guard (call_guard.py), which refuses
 # call requests for agents with errors before the runner accepts them.
 #
 
+import json
 import os
 import time
 from typing import Optional
 
 import httpx
 from fastapi import FastAPI, Response
+from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
+import prospero
 import store
 from call_guard import StartValidationMiddleware
 from http_common import http_error, issues_json
@@ -48,6 +52,12 @@ class SaveVersion(BaseModel):
     message: str = ""
     source: str = "human"
     base_version: Optional[int] = None  # version the edit started from
+
+
+class CopilotTurn(BaseModel):
+    agent: Optional[dict] = None  # the agent as it stands; none for a brand-new one
+    history: list[dict] = []      # earlier messages: [{"role": "user"|"assistant", "content": "..."}]
+    message: str
 
 
 def _with_issues(agent_id: str, record: dict) -> dict:
@@ -140,6 +150,21 @@ def register_routes(app: FastAPI) -> None:
             return store.get_call(call_id)
         except (store.NotFound, ValueError) as e:
             raise http_error(e)
+
+    # -- ProsperO --
+    complete = None  # the OpenAI client is created on first use
+
+    @app.post("/api/copilot")
+    async def copilot(turn: CopilotTurn):
+        nonlocal complete
+        complete = complete or prospero.openai_complete()
+
+        async def events():
+            async for event in prospero.run_turn(turn.agent, turn.history, turn.message, complete):
+                yield f"data: {json.dumps(event)}\n\n"
+
+        # Server-sent events: the editor draws each edit as it arrives.
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
     # -- tools --
     @app.post("/api/validate")
