@@ -26,6 +26,7 @@ This file records the project's architectural decisions (ADs): decisions that ar
 | AD-12 | Operations exist in Python and TypeScript, held identical by shared test cases |
 | AD-13 | ProsperO is a stateless tool loop on the backend that edits through operations and can't finish with errors |
 | AD-14 | ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step |
+| AD-15 | Each agent has a list of languages, English only by default, enforced by the runtime |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -453,6 +454,42 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 - *"I can't accept part of a proposal."* Not yet: it's all or nothing. Rejecting and asking ProsperO for a narrower change is the workaround. Per-edit accept would build on the same edit list.
 
 **Revisit when** users need partial acceptance, or several people (or ProsperO and a person) need to edit at the same time.
+
+---
+
+## AD-15: Each agent has a list of languages, English only by default, enforced by the runtime
+
+**Decision.** An agent has an optional `languages` field: ISO 639-1 codes, default first (`["en"]`, `["en", "es"]`). Without it, the agent is **English only**. It's set per agent, like the voice: in Agent settings or by ProsperO. The runtime enforces it in three places (`backend/agent_builder/languages.py`):
+- **The LLM:** the builder adds a language rule to **every node's** role message, after the persona or the node's persona override, so no node can drop it. With one language: "speak only English, whatever language the caller uses". With several: start in the default, offer the choice at the start of the call, then keep to the caller's choice.
+- **Callers in other languages:** told, in the default language, that the agent can only help in its languages, and offered a call back from staff (taking their name and phone number). That's option 1 of three considered.
+- **Speech-to-text and text-to-speech:** fixed to the language when there's one; left to detect it when there are several.
+
+Validation refuses an empty list, unsupported codes, and duplicates. The supported languages are served at `/api/languages`, so the editor's picker can't drift from the backend.
+
+**Product argument.**
+- **Clinics decide which languages their agent speaks.** In testing, the agent switched to whatever language the caller used. For a medical practice, that means instructions, confirmations and safety messages in a language nobody at the clinic can verify.
+- **Multilingual clinics get it as a setting, not a prompt hack:** list the languages, and the agent offers them in the greeting.
+- **No caller is stranded:** callers in other languages are offered a call back instead of a dead end.
+
+**AI angle.**
+- **Enforced outside the prompt the user writes.** The rule is added by the builder at runtime, not written into the persona, so neither a person nor ProsperO can forget or remove it while editing. ProsperO is told not to write language rules itself.
+- **Speech services fixed to one language** are more accurate for that language, and reduce the chance of the LLM receiving text in another language at all.
+- **Verified on a real call:** a Spanish-speaking caller to an English-only agent got English replies and an offer of a call back.
+
+**Alternatives considered.**
+- **A persona instruction only.** Rejected: easy to edit away or forget, and it does nothing for speech recognition.
+- **Ignoring other languages, or explaining without offering anything.** Rejected in favour of offering a call back, so callers aren't left without help.
+- **Detecting the language and refusing in the caller's own language.** Rejected for now: it means speaking a language the clinic didn't approve, which is what this decision prevents.
+
+**Cost of reversal.** Low. The field is optional, and removing the rule restores the previous behaviour.
+
+**Likely challenges.**
+- *"Speech in other languages gets misheard."* Yes. With speech-to-text fixed to English, a Spanish caller's words are partly transcribed as English ("Hola… por favor" came out as "Homer. All favor."). The agent still noticed and offered a call back, but a name or number taken for the call back can be garbled.
+- *"The call-back details aren't stored as data."* True. They're only in the transcript, because no transition collects them. A dedicated "take a message" transition, or a global edge, would make it structured.
+- *"Multilingual agents aren't tested on a real call."* The rule for several languages is covered by unit tests only so far.
+- *"The voice may not suit the language."* ElevenLabs voices are multilingual but sound most natural in their own accent. The voice picker shows each voice's accent; matching them is left to the user.
+
+**Revisit when** call-back requests need to be structured data, or clinics need different languages per node (for example, a Spanish-only line).
 
 ---
 
