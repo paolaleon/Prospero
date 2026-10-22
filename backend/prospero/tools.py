@@ -5,11 +5,23 @@
 # offered operations that exist, with exactly the fields apply_op accepts.
 #
 
+import copy
+
 from agent_builder.operations import OPERATIONS
 
 # Operations ProsperO doesn't get: layout is the editor's job, and regenerating
 # the whole agent would defeat reviewable, step-by-step edits.
 EXCLUDED = {"moveNodes", "replaceAgent"}
+
+
+def _without_position(schema):
+    """Drop `position` everywhere in a schema: layout is the editor's job, and the
+    LLM can't know how big the cards are, so its coordinates would overlap."""
+    if isinstance(schema, dict):
+        return {k: _without_position(v) for k, v in schema.items() if k != "position"}
+    if isinstance(schema, list):
+        return [_without_position(v) for v in schema]
+    return schema
 
 
 def _edit_tool(name: str) -> dict:
@@ -21,7 +33,7 @@ def _edit_tool(name: str) -> dict:
             "description": definition.description,
             "parameters": {
                 "type": "object",
-                "properties": definition.fields,
+                "properties": _without_position(copy.deepcopy(definition.fields)),
                 "required": list(definition.required),
                 "additionalProperties": False,
             },

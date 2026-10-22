@@ -143,6 +143,15 @@ async def run_turn(
     yield {"type": "error", "message": f"ProsperO stopped after {MAX_STEPS} steps without finishing."}
 
 
+def _strip_positions(op: dict) -> dict:
+    # Even if the model sets positions anyway, layout stays the editor's job.
+    if isinstance(op.get("node"), dict):
+        op["node"].pop("position", None)
+    if isinstance(op.get("patch"), dict):
+        op["patch"].pop("position", None)
+    return op
+
+
 def _handle(call: ToolCall, agent: dict) -> tuple[str, list, dict, Optional[dict]]:
     """Run one tool call. Returns (result for the LLM, events, agent, done event or None)."""
     try:
@@ -153,7 +162,7 @@ def _handle(call: ToolCall, agent: dict) -> tuple[str, list, dict, Optional[dict
         return "ERROR: the arguments were not a JSON object.", [], agent, None
 
     if call.name in EDIT_TOOL_NAMES:
-        op = {"type": call.name, **args}
+        op = _strip_positions({"type": call.name, **args})
         try:
             agent = apply_op(agent, op)
         except OperationError as e:

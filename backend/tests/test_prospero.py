@@ -141,3 +141,16 @@ def test_layout_and_whole_agent_replacement_are_not_offered(name):
     from prospero.tools import TOOLS
 
     assert name not in {t["function"]["name"] for t in TOOLS}
+
+
+def test_positions_are_left_to_the_editor():
+    from prospero.tools import TOOLS
+
+    assert '"position"' not in json.dumps(TOOLS)  # not offered...
+    placed = LLMReply(None, [
+        call("addNode", node={"name": "a", "task_messages": TASK("Hi."), "position": {"x": 9, "y": 9}}),
+        call("updateNode", node="a", patch={"end": True, "position": {"x": 1, "y": 1}}),
+    ])
+    events = run(ScriptedLLM(placed, LLMReply("Ok.", [])))
+    ops = [e["op"] for e in events if e["type"] == "op"]
+    assert "position" not in ops[0]["node"] and ops[1]["patch"] == {"end": True}  # ...and ignored if sent
