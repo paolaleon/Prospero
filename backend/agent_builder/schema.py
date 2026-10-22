@@ -11,6 +11,8 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .languages import DEFAULT_LANGUAGES
+
 DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # ElevenLabs "Rachel"
 DEFAULT_MODEL = "gpt-4o"
 
@@ -75,6 +77,7 @@ class AgentConfig:
     persona: str = ""                    # global role_message, applied to every node
     voice_id: str = DEFAULT_VOICE_ID
     model: str = DEFAULT_MODEL
+    languages: list = field(default_factory=lambda: list(DEFAULT_LANGUAGES))  # default first
 
     @classmethod
     def from_dict(cls, d: dict) -> "AgentConfig":
@@ -85,4 +88,5 @@ class AgentConfig:
             persona=d.get("persona", ""),
             voice_id=d.get("voice_id", DEFAULT_VOICE_ID),
             model=d.get("model", DEFAULT_MODEL),
+            languages=list(d.get("languages") or DEFAULT_LANGUAGES),
         )

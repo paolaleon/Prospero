@@ -57,6 +57,12 @@ NODE = {
 
 AGENT_FIELDS = {
     "name": {"type": "string"},
+    "languages": {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 1,
+        "description": "ISO 639-1 codes the agent speaks, default first (e.g. [\"en\", \"es\"]). English only if omitted.",
+    },
     "persona": {"type": "string", "description": "Applies to every node unless overridden."},
     "voice_id": {"type": "string"},
     "model": {"type": "string"},

@@ -50,6 +50,7 @@ from pipecat_flows import FlowManager
 import api
 import store
 from agent_builder import AgentBuilder
+from agent_builder.languages import speech_language
 
 # Load .env next to this file, so the bot runs the same from the repo root or backend/.
 load_dotenv(Path(__file__).parent / ".env", override=True)
@@ -118,10 +119,16 @@ async def run_bot(
     config = builder.config
     logger.info(f"Starting '{config.name}' with {len(config.nodes)} nodes (call {recorder.call_id})")
 
-    stt = ElevenLabsRealtimeSTTService(api_key=os.environ["ELEVENLABS_API_KEY"])
+    # One language: fix speech in and out to it (more accurate, and other
+    # languages aren't picked up). Several: let both detect it (AD-15).
+    language = speech_language(config.languages)
+    stt = ElevenLabsRealtimeSTTService(
+        api_key=os.environ["ELEVENLABS_API_KEY"],
+        settings=ElevenLabsRealtimeSTTService.Settings(language=language),
+    )
     tts = ElevenLabsTTSService(
         api_key=os.environ["ELEVENLABS_API_KEY"],
-        settings=ElevenLabsTTSService.Settings(voice=config.voice_id),
+        settings=ElevenLabsTTSService.Settings(voice=config.voice_id, language=language),
     )
     llm = OpenAILLMService(api_key=os.environ["OPENAI_API_KEY"], model=config.model)
 

@@ -17,6 +17,7 @@ from typing import Awaitable, Callable, Optional, Union
 from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 
+from .languages import language_rule
 from .schema import AgentConfig, Edge, Node
 from .validation import validate_agent
 
@@ -92,7 +93,9 @@ class AgentBuilder:
     def _make_node(self, node: Node) -> NodeConfig:
         node_config: NodeConfig = {
             "name": node.name,
-            "role_message": node.role_message or self.config.persona,
+            # The language rule is added to every node, so a node overriding the
+            # persona can't drop it (AD-15).
+            "role_message": f"{node.role_message or self.config.persona}\n\n{language_rule(self.config.languages)}".strip(),
             "task_messages": node.task_messages,
             "functions": [self._make_edge_function(node, edge) for edge in node.edges],
         }

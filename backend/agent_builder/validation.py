@@ -22,6 +22,8 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Iterable, Literal, Optional
 
+from .languages import SUPPORTED_LANGUAGES
+
 # OpenAI tool names: ^[a-zA-Z0-9_-]{1,64}$
 FUNCTION_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 JSON_TYPES = {"string", "number", "integer", "boolean", "array", "object"}
@@ -169,6 +171,21 @@ def start_node_exists(ctx: Context) -> Issues:
         yield error("No start node selected.")
     elif ctx.initial not in ctx.known:
         yield error(f"Start node '{ctx.initial}' is not a defined node.")
+
+
+@agent_rule
+def languages_are_supported(ctx: Context) -> Issues:
+    if "languages" not in ctx.data:
+        return  # English only by default
+    languages = ctx.data["languages"]
+    if not isinstance(languages, list) or not languages:
+        yield error("Choose at least one language.")
+        return
+    unknown = [c for c in languages if c not in SUPPORTED_LANGUAGES]
+    if unknown:
+        yield error(f"Unsupported language code(s): {', '.join(map(str, unknown))}.")
+    if len(set(map(str, languages))) != len(languages):
+        yield error("A language is listed twice.")
 
 
 @agent_rule

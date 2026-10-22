@@ -120,3 +120,33 @@ def test_a_failing_refusal_listener_does_not_break_the_call():
     builder.on_transition_refused = broken
     result, next_node, _ = take_first_transition(builder, {})
     assert (result["status"], next_node) == ("error", None)
+
+
+
+# ---- languages (AD-15) ------------------------------------------------------------
+def role_message(data, node_index=0):
+    builder = AgentBuilder.from_dict(data)
+    return builder._make_node(builder._nodes_by_name[data["nodes"][node_index]["name"]])["role_message"]
+
+
+def test_every_node_gets_the_english_only_rule_by_default():
+    data = json.loads(EXAMPLE.read_text())
+    message = role_message(data)
+    assert message.startswith(data["persona"])
+    assert "speak only English, whatever language the caller uses" in message
+    assert "offer to take their name and phone number so the clinic's staff can call them back" in message
+
+
+def test_a_persona_override_keeps_the_language_rule():
+    data = json.loads(EXAMPLE.read_text())
+    data["nodes"][1]["role_message"] = "Be extra brief."
+    message = role_message(data, 1)
+    assert message.startswith("Be extra brief.") and "speak only English" in message
+
+
+def test_several_languages_offer_a_choice():
+    data = json.loads(EXAMPLE.read_text())
+    data["languages"] = ["en", "es"]
+    message = role_message(data)
+    assert "start the call in English, and at the start offer the caller a choice of English or Spanish" in message
+    assert "Never use any other language." in message

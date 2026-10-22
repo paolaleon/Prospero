@@ -182,3 +182,22 @@ def test_a_new_rule_only_needs_a_decorator():
         assert ("warning", "Use snake_case for node names.", "Done", None) in issues(data)
     finally:
         validation._NODE_RULES.remove(node_names_are_snake_case)
+
+
+# ---- languages ---------------------------------------------------------------------
+def test_languages_are_optional():
+    assert issues(agent()) == set()  # English only by default
+
+
+@pytest.mark.parametrize("languages, message", [
+    ([], "Choose at least one language."),
+    ("en", "Choose at least one language."),
+    (["en", "xx"], "Unsupported language code(s): xx."),
+    (["en", "en"], "A language is listed twice."),
+])
+def test_languages_must_be_supported(languages, message):
+    assert ("error", message, None, None) in issues(agent(languages=languages))
+
+
+def test_supported_languages_pass():
+    assert issues(agent(languages=["en", "es", "zh"])) == set()
