@@ -25,7 +25,8 @@ export interface Proposal {
   agent: Agent; // base with ProsperO's edits applied
   edits: { op: Op; label: string }[];
   status: "building" | "ready" | "question" | "error";
-  summary?: string;
+  summary?: string; // the latest turn's
+  summaries: string[]; // every turn's, for the version message on accept
   assumptions?: string[];
   issues: Issue[];
   error?: string;
@@ -219,7 +220,7 @@ export const useEditor = create<EditorState>((set, get) => {
         selection: null,
         proposal: proposal
           ? { ...proposal, status: "building", error: undefined }
-          : { base: draft, agent: draft, edits: [], status: "building", issues: [] },
+          : { base: draft, agent: draft, edits: [], status: "building", issues: [], summaries: [] },
       });
     },
 
@@ -237,7 +238,9 @@ export const useEditor = create<EditorState>((set, get) => {
 
     settleProposal(outcome) {
       const { proposal } = get();
-      if (proposal) set({ proposal: { ...proposal, ...outcome } });
+      if (!proposal) return;
+      const summaries = outcome.summary ? [...proposal.summaries, outcome.summary] : proposal.summaries;
+      set({ proposal: { ...proposal, ...outcome, summaries } });
     },
 
     async acceptProposal() {
@@ -246,7 +249,8 @@ export const useEditor = create<EditorState>((set, get) => {
       // Give ProsperO's new nodes the positions they're shown at, then apply the
       // whole proposal as one undoable step.
       const agent = applyOp(proposal.agent, { type: "moveNodes", positions: missingPositions(proposal.agent) });
-      const label = `ProsperO: ${proposal.summary || `${proposal.edits.length} edits`}`;
+      // A proposal can span several turns; the version message covers all of them.
+      const label = `ProsperO: ${proposal.summaries.join(" ") || `${proposal.edits.length} edits`}`;
       lastCoalesce = null;
       set({
         proposal: null,

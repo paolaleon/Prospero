@@ -85,6 +85,18 @@ describe("proposals", () => {
     expect(state().draft).toEqual(draft());
   });
 
+  it("describe every turn of a multi-turn proposal in the saved version", async () => {
+    state().startProposal();
+    state().settleProposal({ status: "ready", summary: "Built the agent.", issues: [] });
+    state().startProposal();
+    state().proposeEdit(intake, "Added node 'intake'");
+    state().settleProposal({ status: "ready", summary: "Added intake.", issues: [] });
+    expect(state().proposal!.summary).toBe("Added intake."); // the bar shows the latest turn
+
+    await state().acceptProposal();
+    expect(saveAgent.mock.calls[0][2].message).toBe("ProsperO: Built the agent. Added intake.");
+  });
+
   it("report an edit the browser can't apply instead of hiding it", () => {
     state().startProposal();
     state().proposeEdit({ type: "deleteNode", node: "nope" }, "Deleted node 'nope'");
