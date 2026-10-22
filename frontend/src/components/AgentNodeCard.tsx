@@ -1,5 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { AlertTriangle, CircleAlert, Flag, Play, Plus } from "lucide-react";
+import { AlertTriangle, CircleAlert, Flag, Play, Plus, Sparkles } from "lucide-react";
+import type { Change } from "../lib/diff";
 import { useEditor } from "../lib/store";
 import type { AgentNode, Issue } from "../lib/types";
 import { NODE_WIDTH } from "../lib/layout";
@@ -12,12 +13,14 @@ export type AgentNodeData = {
   issues: Issue[];
   selectedEdge: number | null;
   live?: LiveState;
+  /** Set while reviewing a ProsperO proposal. */
+  change?: Change;
 };
 
 export type AgentFlowNode = Node<AgentNodeData, "agent">;
 
 export default function AgentNodeCard({ data, selected }: NodeProps<AgentFlowNode>) {
-  const { node, isStart, issues, selectedEdge, live } = data;
+  const { node, isStart, issues, selectedEdge, live, change } = data;
   const select = useEditor((s) => s.select);
   const nodeIssues = issues.filter((i) => i.edge === undefined);
   const errors = issues.filter((i) => i.severity === "error").length;
@@ -27,7 +30,11 @@ export default function AgentNodeCard({ data, selected }: NodeProps<AgentFlowNod
   const ring =
     live === "active"
       ? "ring-4 ring-emerald-400/70 border-emerald-500"
-      : selected
+      : change === "added"
+        ? "ring-2 ring-violet-400/60 border-violet-400"
+        : change === "changed"
+          ? "border-violet-300 border-dashed"
+          : selected
         ? "ring-2 ring-indigo-500/60 border-indigo-500"
         : errors
           ? "border-red-300"
@@ -36,7 +43,7 @@ export default function AgentNodeCard({ data, selected }: NodeProps<AgentFlowNod
   return (
     <div
       style={{ width: NODE_WIDTH }}
-      className={`rounded-xl border bg-white shadow-sm transition-shadow ${ring} ${live === "visited" ? "bg-emerald-50/40" : ""}`}
+      className={`rounded-xl border bg-white shadow-sm transition-shadow ${ring} ${live === "visited" ? "bg-emerald-50/40" : ""} ${change === "removed" ? "opacity-40" : ""}`}
     >
       <Handle
         type="target"
@@ -46,9 +53,17 @@ export default function AgentNodeCard({ data, selected }: NodeProps<AgentFlowNod
       />
 
       <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2">
-        <span className="min-w-0 flex-1 truncate font-mono text-sm font-semibold" title={node.name}>
+        <span
+          className={`min-w-0 flex-1 truncate font-mono text-sm font-semibold ${change === "removed" ? "line-through" : ""}`}
+          title={node.name}
+        >
           {node.name}
         </span>
+        {change && (
+          <Badge className="bg-violet-100 text-violet-700">
+            <Sparkles size={10} /> {change === "added" ? "New" : change === "changed" ? "Changed" : "Removed"}
+          </Badge>
+        )}
         {isStart && (
           <Badge className="bg-indigo-100 text-indigo-700">
             <Play size={10} /> Start

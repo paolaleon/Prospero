@@ -1,7 +1,8 @@
-import { ArrowLeft, CircleAlert, Redo2, Save, Sparkles, Undo2, X, AlertTriangle } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, CircleAlert, Loader2, Redo2, Save, Sparkles, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../lib/api";
 import { pathOf, useCall } from "../lib/call";
+import { changeCount, diffAgents } from "../lib/diff";
 import { navigate } from "../lib/router";
 import { isDirty, useEditor } from "../lib/store";
 import type { CallRecord } from "../lib/types";
@@ -75,6 +76,7 @@ export default function Editor({ agentId }: { agentId: string }) {
     <div className="flex h-full flex-col">
       <TopBar />
       <ErrorBanner />
+      <ProposalBar />
       <div className="flex min-h-0 flex-1">
         <CopilotPanel />
         <main className="relative min-w-0 flex-1">
@@ -91,7 +93,9 @@ export default function Editor({ agentId }: { agentId: string }) {
 function TopBar() {
   const draft = useEditor((s) => s.draft)!;
   const version = useEditor((s) => s.version);
-  const issues = useEditor((s) => s.issues);
+  // While reviewing, count the proposal's issues: that's what's on the canvas.
+  const issues = useEditor((s) => s.proposal?.issues ?? s.issues);
+  const reviewing = useEditor((s) => s.proposal !== null);
   const past = useEditor((s) => s.past);
   const future = useEditor((s) => s.future);
   const undo = useEditor((s) => s.undo);
@@ -133,10 +137,10 @@ function TopBar() {
       </div>
 
       <div className="ml-auto flex items-center gap-1">
-        <IconButton onClick={undo} disabled={!past.length} title={past.length ? `Undo: ${past.at(-1)!.label} (⌘Z)` : "Undo"}>
+        <IconButton onClick={undo} disabled={reviewing || !past.length} title={past.length ? `Undo: ${past.at(-1)!.label} (⌘Z)` : "Undo"}>
           <Undo2 size={16} />
         </IconButton>
-        <IconButton onClick={redo} disabled={!future.length} title={future.length ? `Redo: ${future[0].label} (⇧⌘Z)` : "Redo"}>
+        <IconButton onClick={redo} disabled={reviewing || !future.length} title={future.length ? `Redo: ${future[0].label} (⇧⌘Z)` : "Redo"}>
           <Redo2 size={16} />
         </IconButton>
         <SaveButton />
@@ -199,6 +203,71 @@ function SaveButton() {
             </button>
           </div>
         </form>
+      )}
+    </div>
+  );
+}
+
+/** ProsperO's proposal: progress while it builds, then Accept or Reject. */
+function ProposalBar() {
+  const proposal = useEditor((s) => s.proposal);
+  const accept = useEditor((s) => s.acceptProposal);
+  const reject = useEditor((s) => s.rejectProposal);
+  const saving = useEditor((s) => s.saving);
+  const changes = useMemo(() => (proposal ? changeCount(diffAgents(proposal.base, proposal.agent)) : 0), [proposal]);
+  const [showAssumptions, setShowAssumptions] = useState(false);
+  if (!proposal) return null;
+
+  const { status, edits, summary, assumptions = [], error } = proposal;
+  return (
+    <div className="border-b border-violet-200 bg-violet-50 px-4 py-2 text-sm text-violet-900">
+      <div className="flex items-center gap-3">
+        {status === "building" ? (
+          <Loader2 size={16} className="shrink-0 animate-spin text-violet-600" />
+        ) : (
+          <Sparkles size={16} className="shrink-0 text-violet-600" />
+        )}
+        <div className="min-w-0 flex-1">
+          {status === "building" && (
+            <span>
+              ProsperO is building… <span className="text-violet-600">{edits.length} edits so far</span>
+            </span>
+          )}
+          {status === "ready" && (
+            <span>
+              <span className="font-medium">ProsperO's proposal:</span> {summary}{" "}
+              <span className="text-violet-600">({changes} changes)</span>
+            </span>
+          )}
+          {status === "question" && <span>ProsperO has a question for you in the Copilot panel.</span>}
+          {status === "error" && <span className="text-red-700">{error ?? "ProsperO couldn't finish."}</span>}
+        </div>
+        {assumptions.length > 0 && (
+          <button onClick={() => setShowAssumptions((s) => !s)} className="shrink-0 text-xs text-violet-700 hover:underline">
+            {showAssumptions ? "Hide" : "Show"} {assumptions.length} assumption{assumptions.length > 1 && "s"}
+          </button>
+        )}
+        <button
+          onClick={reject}
+          disabled={status === "building"}
+          className="flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-40"
+        >
+          <X size={14} /> Reject
+        </button>
+        <button
+          onClick={accept}
+          disabled={status !== "ready" || saving}
+          className="flex shrink-0 items-center gap-1 rounded-md bg-violet-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-violet-700 disabled:opacity-40"
+        >
+          <Check size={14} /> {saving ? "Saving…" : "Accept & save"}
+        </button>
+      </div>
+      {showAssumptions && (
+        <ul className="mt-2 list-inside list-disc space-y-0.5 pl-7 text-xs text-violet-800">
+          {assumptions.map((a) => (
+            <li key={a}>{a}</li>
+          ))}
+        </ul>
       )}
     </div>
   );
