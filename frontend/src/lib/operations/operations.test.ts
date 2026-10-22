@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyOp, blankAgent, describeOp, newEdge, newNode, uniqueName } from "./operations";
-import type { Agent } from "./types";
+import { applyOp, blankAgent, describeOp, newEdge, newNode, uniqueName } from ".";
+import type { Agent } from "../types";
 
 const agent = (): Agent => blankAgent("Test");
 
