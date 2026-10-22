@@ -18,7 +18,7 @@ import "@xyflow/react/dist/style.css";
 import { LayoutGrid, Plus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { diffAgents, type AgentDiff } from "../lib/diff";
-import { autoLayout, missingPositions, NODE_WIDTH } from "../lib/layout";
+import { autoLayout, NODE_WIDTH } from "../lib/layout";
 import { newEdge, newNode } from "../lib/operations";
 import { useEditor } from "../lib/store";
 import type { Agent } from "../lib/types";
@@ -51,8 +51,9 @@ function FlowCanvas({ live }: { live?: LiveView }) {
   const reviewing = proposal !== null;
   const agent = proposal?.agent ?? draft;
   const diff = useMemo(() => (proposal ? diffAgents(proposal.base, proposal.agent) : null), [proposal]);
-  // ProsperO's new nodes have no position yet; lay them out for display.
-  const layout = useMemo(() => missingPositions(agent), [agent]);
+  // While reviewing, ProsperO's tidy layout of the whole proposal (laid out in
+  // the store after each edit) decides where every node goes.
+  const layout = reviewing ? proposal.layout : null;
   const draftIssues = useEditor((s) => s.issues);
   const issues = proposal?.issues ?? draftIssues;
   const selection = useEditor((s) => s.selection);
@@ -72,7 +73,7 @@ function FlowCanvas({ live }: { live?: LiveView }) {
         return {
           id: node.name,
           type: "agent",
-          position: node.position ?? layout[node.name] ?? { x: i * (NODE_WIDTH + 80), y: 0 },
+          position: layout?.[node.name] ?? node.position ?? { x: i * (NODE_WIDTH + 80), y: 0 },
           measured: measured.get(node.name),
           selected: selection?.node === node.name,
           data: {
@@ -85,14 +86,17 @@ function FlowCanvas({ live }: { live?: LiveView }) {
           },
         } satisfies AgentFlowNode;
       });
-      // Nodes the proposal deletes stay visible, faded, where they were.
+      // Nodes the proposal deletes stay visible, faded, in a column to the left
+      // of the new layout (they aren't part of it: they won't be saved).
+      const left = Math.min(0, ...shown.map((n) => n.position.x)) - NODE_WIDTH - 110;
+      let top = Math.min(0, ...shown.map((n) => n.position.y));
       const removed = (proposal?.base.nodes ?? [])
         .filter((node) => diff?.nodes[node.name] === "removed")
         .map(
           (node): AgentFlowNode => ({
             id: node.name,
             type: "agent",
-            position: node.position ?? { x: 0, y: 0 },
+            position: { x: left, y: (top += 160) - 160 },
             measured: measured.get(node.name),
             data: { node, isStart: false, issues: [], selectedEdge: null, change: "removed" },
           }),
@@ -187,8 +191,10 @@ function FlowCanvas({ live }: { live?: LiveView }) {
     select({ kind: "node", node: created.name });
   }
 
-  function tidyUp() {
-    dispatch({ type: "moveNodes", positions: autoLayout(agent) });
+  async function tidyUp() {
+    // Use the cards' measured sizes, so ELK spaces them exactly.
+    const sizes = Object.fromEntries(nodes.map((n) => [n.id, { width: n.measured?.width, height: n.measured?.height }]));
+    dispatch({ type: "moveNodes", positions: await autoLayout(agent, sizes) });
     requestAnimationFrame(() => fitView({ padding: 0.2, duration: 300 }));
   }
 

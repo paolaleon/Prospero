@@ -10,9 +10,9 @@
 
 import { create } from "zustand";
 import { api, ApiError } from "./api";
-import { missingPositions } from "./layout";
+import { autoLayout, needsLayout, placeBelow } from "./layout";
 import { applyOp, describeOp, type Op } from "./operations";
-import type { Agent, Issue, VersionSource } from "./types";
+import type { Agent, Issue, Position, VersionSource } from "./types";
 
 export type Selection =
   | { kind: "node"; node: string }
@@ -24,6 +24,8 @@ export interface Proposal {
   base: Agent; // the draft when ProsperO started
   agent: Agent; // base with ProsperO's edits applied
   edits: { op: Op; label: string }[];
+  /** ProsperO tidies the whole graph after every edit (ELK); null until laid out. */
+  layout: Record<string, Position> | null;
   status: "building" | "ready" | "question" | "error";
   summary?: string; // the latest turn's
   summaries: string[]; // every turn's, for the version message on accept
@@ -93,6 +95,18 @@ export const useEditor = create<EditorState>((set, get) => {
     }, VALIDATE_DEBOUNCE_MS);
   }
 
+  // Lay the proposal out after each edit. Layouts are async, so only the one for
+  // the latest version of the proposal is kept.
+  let layoutSeq = 0;
+  async function relayoutProposal() {
+    const seq = ++layoutSeq;
+    const target = get().proposal?.agent;
+    if (!target) return;
+    const layout = await autoLayout(target);
+    const current = get().proposal;
+    if (seq === layoutSeq && current?.agent === target) set({ proposal: { ...current, layout } });
+  }
+
   function setDraft(draft: Agent) {
     set({ draft });
     scheduleValidation();
@@ -119,7 +133,8 @@ export const useEditor = create<EditorState>((set, get) => {
         lastCoalesce = null;
         // Nodes without a position (e.g. hand-written JSON) are laid out as part
         // of loading, not as an edit: the layout is stored with the next save.
-        const agent = applyOp(record.agent, { type: "moveNodes", positions: missingPositions(record.agent) });
+        const positions = needsLayout(record.agent) ? await autoLayout(record.agent) : placeBelow(record.agent);
+        const agent = applyOp(record.agent, { type: "moveNodes", positions });
         set({
           version: record.version,
           draft: agent,
@@ -220,8 +235,9 @@ export const useEditor = create<EditorState>((set, get) => {
         selection: null,
         proposal: proposal
           ? { ...proposal, status: "building", error: undefined }
-          : { base: draft, agent: draft, edits: [], status: "building", issues: [], summaries: [] },
+          : { base: draft, agent: draft, edits: [], status: "building", issues: [], summaries: [], layout: null },
       });
+      relayoutProposal();
     },
 
     proposeEdit(op, label) {
@@ -229,6 +245,7 @@ export const useEditor = create<EditorState>((set, get) => {
       if (!proposal) return;
       try {
         set({ proposal: { ...proposal, agent: applyOp(proposal.agent, op), edits: [...proposal.edits, { op, label }] } });
+        relayoutProposal();
       } catch (e) {
         // The backend applied this edit successfully, so a failure here means
         // the two implementations disagree (AD-12): surface it, don't hide it.
@@ -246,9 +263,12 @@ export const useEditor = create<EditorState>((set, get) => {
     async acceptProposal() {
       const { proposal, draft, past } = get();
       if (!proposal || !draft) return false;
-      // Give ProsperO's new nodes the positions they're shown at, then apply the
-      // whole proposal as one undoable step.
-      const agent = applyOp(proposal.agent, { type: "moveNodes", positions: missingPositions(proposal.agent) });
+      // Save the tidy layout the proposal was shown with (computed now if the
+      // last edit's layout hasn't finished), as one undoable step.
+      const positions = proposal.layout && sameNodes(proposal.layout, proposal.agent)
+        ? proposal.layout
+        : await autoLayout(proposal.agent);
+      const agent = applyOp(proposal.agent, { type: "moveNodes", positions });
       // A proposal can span several turns; the version message covers all of them.
       const label = `ProsperO: ${proposal.summaries.join(" ") || `${proposal.edits.length} edits`}`;
       lastCoalesce = null;
@@ -296,4 +316,8 @@ export function isDirty(state: Pick<EditorState, "draft" | "saved">): boolean {
 
 export function issuesFor(issues: Issue[], node: string, edge?: number): Issue[] {
   return issues.filter((i) => i.node === node && (edge === undefined || i.edge === edge));
+}
+
+function sameNodes(layout: Record<string, Position>, agent: Agent): boolean {
+  return agent.nodes.every((n) => layout[n.name]) && Object.keys(layout).length === agent.nodes.length;
 }
