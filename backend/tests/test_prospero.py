@@ -21,7 +21,7 @@ class ScriptedLLM:
         self.replies = list(replies)
         self.seen = []
 
-    async def __call__(self, messages, tools):
+    async def __call__(self, messages, tools, on_tool_call=None):
         self.seen.append(copy.deepcopy(messages))
         if not self.replies:
             raise AssertionError("the LLM was called more times than scripted")
@@ -114,7 +114,7 @@ def test_stops_after_max_steps(monkeypatch):
 
 
 def test_an_llm_failure_becomes_an_error_event():
-    async def failing(messages, tools):
+    async def failing(messages, tools, on_tool_call=None):
         raise RuntimeError("rate limited")
 
     [event] = run(failing)
@@ -163,3 +163,59 @@ def test_prospero_can_set_languages_and_knows_the_runtime_adds_the_rules():
     update_agent = next(t for t in TOOLS if t["function"]["name"] == "updateAgent")
     assert "languages" in update_agent["function"]["parameters"]["properties"]["patch"]["properties"]
     assert "English only unless the user asks" in SYSTEM_PROMPT
+
+
+# ---- streaming ----------------------------------------------------------------------
+class StreamingLLM:
+    """Reports each tool call through on_tool_call before returning, like the real
+    streaming client, and notes what the consumer had received by then."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.seen_before_return = []
+        self.received = []
+
+    async def __call__(self, messages, tools, on_tool_call=None):
+        reply = self.replies.pop(0)
+        for c in reply.tool_calls:
+            await on_tool_call(c)
+            await asyncio.sleep(0.01)  # time passes between calls while streaming
+        self.seen_before_return.append(list(self.received))
+        return reply
+
+
+def test_edits_are_sent_while_the_reply_is_still_streaming():
+    llm = StreamingLLM(BUILD, FINISH)
+
+    async def collect():
+        events = []
+        async for e in run_turn(None, [], "Build it.", llm):
+            llm.received.append(e["type"])
+            events.append(e)
+        return events
+
+    events = asyncio.run(collect())
+    assert llm.seen_before_return[0] == ["op"] * 5  # all five edits out before the reply ended
+    assert [e["type"] for e in events] == ["op"] * 5 + ["done"]
+    assert events[-1]["agent"]["initial_node"] == "greeting"
+
+
+def test_streamed_calls_are_answered_once_and_in_order():
+    bad = call("addEdge", node="nope", edge={"function": "x", "description": "x", "target": "y"})
+    llm = StreamingLLM(LLMReply(None, [bad, *BUILD.tool_calls]), FINISH)
+    recorder = ScriptedLLM()  # only used to see the second request's messages
+
+    async def second(messages, tools, on_tool_call=None):
+        recorder.seen.append(copy.deepcopy(messages))
+        return await StreamingLLM.__call__(llm, messages, tools, on_tool_call)
+
+    llm_calls = iter([llm, second])
+
+    async def complete(messages, tools, on_tool_call=None):
+        return await next(llm_calls)(messages, tools, on_tool_call=on_tool_call)
+
+    events = run(complete)
+    tool_messages = [m for m in recorder.seen[0] if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_messages] == [bad.id] + [c.id for c in BUILD.tool_calls]
+    assert tool_messages[0]["content"] == "ERROR: No node named 'nope'."
+    assert [e["type"] for e in events] == ["op"] * 5 + ["done"]

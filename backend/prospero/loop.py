@@ -16,6 +16,7 @@
 #   {"type": "error", "message": "..."}                   the turn failed
 #
 
+import asyncio
 import copy
 import json
 import os
@@ -47,22 +48,72 @@ class LLMReply:
     tool_calls: list = field(default_factory=list)  # list[ToolCall]
 
 
-# Given the messages and tools, return the LLM's next reply.
-Complete = Callable[[list, list], Awaitable[LLMReply]]
+# Called with each tool call as soon as it's complete, while the reply is still
+# being generated, so its edit can be applied and drawn straight away.
+OnToolCall = Callable[[ToolCall], Awaitable[None]]
+
+# Given the messages and tools, return the LLM's next reply. Called as
+# complete(messages, tools, on_tool_call=...): a streaming implementation calls
+# on_tool_call for each finished call along the way; one that doesn't stream
+# (like the test fakes) ignores it, and run_turn handles the calls afterwards.
+Complete = Callable[..., Awaitable[LLMReply]]
 
 
-def openai_complete(model: Optional[str] = None) -> Complete:
-    """The real LLM: OpenAI chat completions with tools."""
+def openai_complete(model: Optional[str] = None, reasoning: Optional[str] = None) -> Complete:
+    """The real LLM: OpenAI chat completions with tools, streamed.
+
+    Building an agent is mostly writing out edits (~1,000 tokens per reply), so
+    streaming lets the first edit appear seconds into a reply instead of at its
+    end. Reasoning is off by default: it roughly halved the first reply's time
+    in testing without hurting the result (PROSPERO_REASONING to change it).
+    """
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
     model = model or os.environ.get("PROSPERO_MODEL", DEFAULT_MODEL)
+    reasoning = reasoning if reasoning is not None else os.environ.get("PROSPERO_REASONING", "none")
+    # Only reasoning models accept the setting.
+    extra = {"reasoning_effort": reasoning} if reasoning and model.startswith(("gpt-5", "o")) else {}
 
-    async def complete(messages: list, tools: list) -> LLMReply:
-        response = await client.chat.completions.create(model=model, messages=messages, tools=tools)
-        message = response.choices[0].message
-        calls = [ToolCall(c.id, c.function.name, c.function.arguments) for c in message.tool_calls or []]
-        return LLMReply(message.content, calls)
+    async def complete(messages: list, tools: list, on_tool_call: Optional[OnToolCall] = None) -> LLMReply:
+        stream = await client.chat.completions.create(
+            model=model, messages=messages, tools=tools, stream=True, **extra
+        )
+        content: list[str] = []
+        calls: dict[int, dict] = {}  # by index, as the deltas arrive
+        reported = 0
+
+        async def report_up_to(index: int):
+            # Calls are generated in order: when call N starts, call N-1 is complete.
+            nonlocal reported
+            while reported < index:
+                call = calls.get(reported)
+                if call and on_tool_call:
+                    await on_tool_call(ToolCall(call["id"], call["name"], call["arguments"]))
+                reported += 1
+
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                content.append(delta.content)
+            for piece in delta.tool_calls or []:
+                await report_up_to(piece.index)
+                call = calls.setdefault(piece.index, {"id": "", "name": "", "arguments": ""})
+                if piece.id:
+                    call["id"] = piece.id
+                if piece.function and piece.function.name:
+                    call["name"] += piece.function.name
+                if piece.function and piece.function.arguments:
+                    call["arguments"] += piece.function.arguments
+        await report_up_to(len(calls))
+
+        ordered = [calls[i] for i in sorted(calls)]
+        return LLMReply(
+            "".join(content) or None,
+            [ToolCall(c["id"], c["name"], c["arguments"]) for c in ordered],
+        )
 
     return complete
 
@@ -106,8 +157,31 @@ async def run_turn(
     messages = _context(agent, history, message)
 
     for _ in range(MAX_STEPS):
+        # Tool calls that finish while the reply streams are handled right away;
+        # their events go through a queue so they're sent as they happen.
+        handled: dict[str, tuple[str, Optional[dict]]] = {}  # call id -> (result, done)
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_tool_call(call: ToolCall) -> None:
+            nonlocal agent
+            result, events, agent, done = _handle(call, agent)
+            handled[call.id] = (result, done)
+            for event in events:
+                queue.put_nowait(event)
+
+        request = asyncio.ensure_future(complete(messages, TOOLS, on_tool_call=on_tool_call))
+        while not request.done() or not queue.empty():
+            if not queue.empty():
+                yield queue.get_nowait()
+                continue
+            waiter = asyncio.ensure_future(queue.get())
+            await asyncio.wait({request, waiter}, return_when=asyncio.FIRST_COMPLETED)
+            if waiter.done():
+                yield waiter.result()
+            else:
+                waiter.cancel()
         try:
-            reply = await complete(messages, TOOLS)
+            reply = request.result()
         except Exception as e:
             logger.exception("ProsperO's LLM call failed")
             yield {"type": "error", "message": f"The LLM request failed: {e}"}
@@ -130,11 +204,14 @@ async def run_turn(
 
         finished = None
         for call in reply.tool_calls:
-            result, events, agent, done = _handle(call, agent)
+            if call.id in handled:
+                result, done = handled[call.id]  # already applied while streaming
+            else:
+                result, events, agent, done = _handle(call, agent)
+                for event in events:
+                    yield event
             # Every tool call gets an answer, as the API requires.
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
-            for event in events:
-                yield event
             finished = finished or done
         if finished:
             yield finished
