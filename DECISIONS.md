@@ -429,7 +429,7 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 - **Editing and undo are paused** while a proposal is open, so a person's edits and ProsperO's can't interleave.
 - **Test calls run the proposal,** so it can be called before it's accepted.
 - **Accept** applies the whole proposal as **one undoable step** and saves it as a version with `source: "copilot"` and ProsperO's summary as the message (AD-4). **Reject** discards it. Follow-up messages keep building on the same proposal.
-- **ProsperO doesn't place nodes:** positions are left out of its tools, and the editor lays out new nodes.
+- **ProsperO doesn't place nodes, but the whole graph is tidied after each of its edits:** positions are left out of its tools, and the editor re-lays out the entire proposal with ELK after every edit, with one connection point per transition row, so crossings stay low. Accept saves exactly the layout that was shown. That replaces a layout arranged by hand; undo after accepting restores it.
 
 **Product argument.**
 - **The user stays in control.** Nothing ProsperO does is kept without an explicit Accept, and the summary and assumptions are shown next to the button.
