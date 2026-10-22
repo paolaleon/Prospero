@@ -25,6 +25,7 @@ This file records the project's architectural decisions (ADs): decisions that ar
 | AD-11 | ProsperO, the copilot, specialises in voice agents for the medical field |
 | AD-12 | Operations exist in Python and TypeScript, held identical by shared test cases |
 | AD-13 | ProsperO is a stateless tool loop on the backend that edits through operations and can't finish with errors |
+| AD-14 | ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -417,6 +418,41 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 - *"The model could ignore the medical defaults."* It followed them in the first real build, but nothing enforces them yet. Medical validation rules (AD-11) are the planned backstop.
 
 **Revisit when** turns get slow enough to hurt the experience (stream the LLM's output), conversations get long (summarise history), or several people work on one agent (server-side sessions).
+
+---
+
+## AD-14: ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step
+
+**Decision.** ProsperO never edits the draft directly. Its edits form a **proposal** held next to the draft in the editor store (`frontend/src/lib/store.ts`):
+- **While it builds,** each streamed edit is applied to a copy of the draft with the same `applyOp` as people's edits (AD-12). The canvas shows the proposal read-only, with nodes marked **New**, **Changed** or **Removed** (removed ones faded in place), compared with the draft by `diffAgents` (`frontend/src/lib/diff.ts`).
+- **Editing and undo are paused** while a proposal is open, so a person's edits and ProsperO's can't interleave.
+- **Test calls run the proposal,** so it can be called before it's accepted.
+- **Accept** applies the whole proposal as **one undoable step** and saves it as a version with `source: "copilot"` and ProsperO's summary as the message (AD-4). **Reject** discards it. Follow-up messages keep building on the same proposal.
+- **ProsperO doesn't place nodes:** positions are left out of its tools, and the editor lays out new nodes.
+
+**Product argument.**
+- **The user stays in control.** Nothing ProsperO does is kept without an explicit Accept, and the summary and assumptions are shown next to the button.
+- **Changes are easy to review:** they're marked on the graph itself rather than in a JSON diff, which suits non-engineers on the deployment team.
+- **Try before you accept.** A test call against the proposal is the most direct check of a voice agent.
+- **One undo reverts it all,** and the copilot version in History says exactly what ProsperO changed and when.
+
+**AI angle.**
+- **Human review is the backstop for what validation can't judge,** such as tone, flow and medical appropriateness (AD-11). Making review the default path is what makes an LLM safe to use on production agents.
+- **Attribution is preserved.** Copilot versions are kept separate from human versions, which matters for auditing and for measuring whether ProsperO's changes help (Phase 2's call data and regression tests).
+
+**Alternatives considered.**
+- **Applying edits straight into the draft,** like a person's. Rejected (the user's choice): AI and human edits blur together, and there's no single place to accept or reject.
+- **A text or JSON diff view.** Rejected as the main view: hard to read for a graph; the canvas shows structure directly.
+- **Letting the user edit while ProsperO works.** Rejected for now: merging concurrent edits needs conflict handling that isn't worth it yet.
+
+**Cost of reversal.** Medium. The store, canvas, call panel and Accept flow all assume proposals.
+
+**Likely challenges.**
+- *"Accept also saves any unsaved changes I made before asking ProsperO."* True: the proposal starts from the draft, unsaved edits included, and Accept saves the result as one copilot version. Saving before asking avoids mixing them.
+- *"Removed transitions aren't shown."* Correct. Removed nodes are, but a removed transition only shows as its node being "Changed". A per-transition view would need ghost edges.
+- *"I can't accept part of a proposal."* Not yet: it's all or nothing. Rejecting and asking ProsperO for a narrower change is the workaround. Per-edit accept would build on the same edit list.
+
+**Revisit when** users need partial acceptance, or several people (or ProsperO and a person) need to edit at the same time.
 
 ---
 
