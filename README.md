@@ -42,7 +42,7 @@ The reasoning behind the main design choices, and their known weaknesses, is in 
   ELEVENLABS_API_KEY=...
   OPENAI_API_KEY=...
   ```
-  Optional: `PROSPERO_MODEL` picks the OpenAI model ProsperO uses (default `gpt-5.5`).
+  Optional: `PROSPERO_MODEL` picks the OpenAI model ProsperO uses (default `gpt-5.5`), and `PROSPERO_REASONING` its reasoning effort (default `none`, which is faster with the same results in testing).
   This file is gitignored. Voice, languages and model are set per agent, not here.
 
 ## Quickstart
