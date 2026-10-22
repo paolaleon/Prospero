@@ -412,7 +412,7 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 **Cost of reversal.** Medium. The event format is the contract with the editor, and the operation-based approach shapes how proposals are reviewed.
 
 **Likely challenges.**
-- *"It's slow."* The first real build took 37 seconds for 25 edits, and the model sent all of them in one reply. Streaming the LLM's output so edits arrive as they're generated, or a faster model through `PROSPERO_MODEL`, would cut the wait.
+- *"It's slow."* Measured in the editor: about 12 seconds before the first edit, about 50 seconds for a new 10-node agent (edits arrive in a few bursts, as the model plans several at once), and about 16 seconds for a follow-up change. The editor plays each burst onto the canvas one edit at a time and shows what ProsperO is doing ("Thinking… 12s", "Drawing… 9 edits", "Checking its work…"), so the wait is visible rather than silent. Streaming the LLM's output so edits arrive as they're generated, or a faster model through `PROSPERO_MODEL`, would shorten it.
 - *"Valid isn't the same as good."* True. Validation guarantees the agent runs, not that it handles callers well. The medical defaults in the prompt help; regression tests from recorded calls (Phase 2 backlog) are the real measure.
 - *"Anyone who reaches the endpoint spends your OpenAI credit."* As with test calls (AD-5), fine locally; a deployment needs sign-in and rate limits.
 - *"The model could ignore the medical defaults."* It followed them in the first real build, but nothing enforces them yet. Medical validation rules (AD-11) are the planned backstop.
