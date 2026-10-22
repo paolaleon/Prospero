@@ -1,19 +1,35 @@
 // Editor store — the agent being edited, its history and its validation state.
 //
-// The draft only changes through `dispatch(op)` (see operations.ts), which keeps
-// undo/redo, labels and (later) copilot edits on one path. Saving appends a new
-// version on the backend; validation runs in the background on every change.
+// The draft only changes through `dispatch(op)` (see operations/), which keeps
+// undo/redo and labels on one path. Saving appends a new version on the
+// backend; validation runs in the background on every change.
+//
+// A ProsperO proposal is held separately from the draft: the edits ProsperO
+// streams are applied to a copy, shown on the canvas for review, and only reach
+// the draft (as one undoable step, saved as a copilot version) when accepted.
 
 import { create } from "zustand";
 import { api, ApiError } from "./api";
 import { missingPositions } from "./layout";
 import { applyOp, describeOp, type Op } from "./operations";
-import type { Agent, Issue } from "./types";
+import type { Agent, Issue, VersionSource } from "./types";
 
 export type Selection =
   | { kind: "node"; node: string }
   | { kind: "edge"; node: string; index: number }
   | null;
+
+/** ProsperO's proposed changes, layered over the draft until accepted or rejected. */
+export interface Proposal {
+  base: Agent; // the draft when ProsperO started
+  agent: Agent; // base with ProsperO's edits applied
+  edits: { op: Op; label: string }[];
+  status: "building" | "ready" | "question" | "error";
+  summary?: string;
+  assumptions?: string[];
+  issues: Issue[];
+  error?: string;
+}
 
 interface HistoryEntry {
   agent: Agent;
@@ -32,14 +48,22 @@ interface EditorState {
   loading: boolean;
   saving: boolean;
   error: string | null;
+  proposal: Proposal | null;
 
   load: (agentId: string) => Promise<void>;
   dispatch: (op: Op, opts?: { coalesce?: string }) => void;
   undo: () => void;
   redo: () => void;
   select: (selection: Selection) => void;
-  save: (message?: string) => Promise<boolean>;
+  save: (message?: string, source?: VersionSource) => Promise<boolean>;
   clearError: () => void;
+
+  /** Start (or continue) a proposal: follow-up turns keep building on it. */
+  startProposal: () => void;
+  proposeEdit: (op: Op, label: string) => void;
+  settleProposal: (outcome: Pick<Proposal, "status" | "summary" | "assumptions" | "issues" | "error">) => void;
+  acceptProposal: () => Promise<boolean>;
+  rejectProposal: () => void;
 }
 
 // Consecutive ops with the same coalesce key (e.g. typing in one field) within
@@ -85,9 +109,10 @@ export const useEditor = create<EditorState>((set, get) => {
     loading: false,
     saving: false,
     error: null,
+    proposal: null,
 
     async load(agentId) {
-      set({ loading: true, error: null, agentId, draft: null, selection: null, past: [], future: [] });
+      set({ loading: true, error: null, agentId, draft: null, selection: null, past: [], future: [], proposal: null });
       try {
         const record = await api.getAgent(agentId);
         lastCoalesce = null;
@@ -107,8 +132,12 @@ export const useEditor = create<EditorState>((set, get) => {
     },
 
     dispatch(op, opts) {
-      const { draft, past, selection } = get();
+      const { draft, past, selection, proposal } = get();
       if (!draft) return;
+      if (proposal) {
+        set({ error: "Accept or reject ProsperO's proposal before editing." });
+        return;
+      }
       let next: Agent;
       try {
         next = applyOp(draft, op);
@@ -132,9 +161,9 @@ export const useEditor = create<EditorState>((set, get) => {
     },
 
     undo() {
-      const { past, future, draft } = get();
+      const { past, future, draft, proposal } = get();
       const entry = past.at(-1);
-      if (!entry || !draft) return;
+      if (!entry || !draft || proposal) return;
       lastCoalesce = null;
       set({
         past: past.slice(0, -1),
@@ -145,9 +174,9 @@ export const useEditor = create<EditorState>((set, get) => {
     },
 
     redo() {
-      const { past, future, draft } = get();
+      const { past, future, draft, proposal } = get();
       const entry = future[0];
-      if (!entry || !draft) return;
+      if (!entry || !draft || proposal) return;
       lastCoalesce = null;
       set({
         past: [...past, { agent: draft, label: entry.label }],
@@ -161,12 +190,12 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selection });
     },
 
-    async save(message) {
+    async save(message, source = "human") {
       const { agentId, draft, version } = get();
       if (!agentId || !draft) return false;
       set({ saving: true, error: null });
       try {
-        const record = await api.saveAgent(agentId, draft, { message, baseVersion: version ?? undefined });
+        const record = await api.saveAgent(agentId, draft, { message, source, baseVersion: version ?? undefined });
         set({ saving: false, version: record.version, saved: record.agent, issues: record.issues });
         return true;
       } catch (e) {
@@ -181,6 +210,56 @@ export const useEditor = create<EditorState>((set, get) => {
 
     clearError() {
       set({ error: null });
+    },
+
+    startProposal() {
+      const { draft, proposal } = get();
+      if (!draft) return;
+      set({
+        selection: null,
+        proposal: proposal
+          ? { ...proposal, status: "building", error: undefined }
+          : { base: draft, agent: draft, edits: [], status: "building", issues: [] },
+      });
+    },
+
+    proposeEdit(op, label) {
+      const { proposal } = get();
+      if (!proposal) return;
+      try {
+        set({ proposal: { ...proposal, agent: applyOp(proposal.agent, op), edits: [...proposal.edits, { op, label }] } });
+      } catch (e) {
+        // The backend applied this edit successfully, so a failure here means
+        // the two implementations disagree (AD-12): surface it, don't hide it.
+        set({ proposal: { ...proposal, status: "error", error: `Couldn't show an edit: ${(e as Error).message}` } });
+      }
+    },
+
+    settleProposal(outcome) {
+      const { proposal } = get();
+      if (proposal) set({ proposal: { ...proposal, ...outcome } });
+    },
+
+    async acceptProposal() {
+      const { proposal, draft, past } = get();
+      if (!proposal || !draft) return false;
+      // Give ProsperO's new nodes the positions they're shown at, then apply the
+      // whole proposal as one undoable step.
+      const agent = applyOp(proposal.agent, { type: "moveNodes", positions: missingPositions(proposal.agent) });
+      const label = `ProsperO: ${proposal.summary || `${proposal.edits.length} edits`}`;
+      lastCoalesce = null;
+      set({
+        proposal: null,
+        past: [...past.slice(-MAX_HISTORY + 1), { agent: draft, label }],
+        future: [],
+        selection: null,
+      });
+      setDraft(agent);
+      return get().save(label, "copilot");
+    },
+
+    rejectProposal() {
+      set({ proposal: null });
     },
   };
 });
