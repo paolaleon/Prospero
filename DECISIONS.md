@@ -1,6 +1,6 @@
 # Architectural Decisions
 
-This file records the architectural decisions (ADs) built into the project so far: decisions that are hard to undo and that shape how the system works. Each one is written to be defended from an AI product engineer's point of view:
+This file records the project's architectural decisions (ADs): decisions that are hard to undo and that shape how the system works. Most describe code that exists; an AD recorded ahead of its code says so. Each one is written to be defended from an AI product engineer's point of view:
 
 - **Decision**: what we chose.
 - **Product argument**: why it helps the people building and testing agents.
@@ -22,6 +22,7 @@ This file records the architectural decisions (ADs) built into the project so fa
 | AD-8 | The frontend and backend are separate apps that only communicate over HTTP |
 | AD-9 | Every edit to an agent is a named, serialisable operation |
 | AD-10 | A transition without the data it requires is refused, and the call stays in its node |
+| AD-11 | ProsperO, the copilot, specialises in voice agents for the medical field |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -306,6 +307,44 @@ If a check fails, the transition is **refused**:
 - *"Only required fields and allowed values are checked, not types."* True. A number sent as text, for example, isn't refused. Type checks could be added to `check_args` the same way.
 
 **Revisit when** you add stricter field types (dates, phone numbers), when a limit on refusals per node is needed, or if strict structured outputs become simple to enable through Pipecat.
+
+---
+
+## AD-11: ProsperO, the copilot, specialises in voice agents for the medical field
+
+**Decision.** ProsperO, the Phase 2 copilot that builds and edits agents from natural-language prompts, is designed for **voice agents used by medical practices**: clinics and practices handling scheduling, rescheduling and cancellations, patient intake, reminders, prescription refill requests, billing questions, and routing urgent calls. It's being built on the `phase-2-copilot` branch, and this decision shapes it from the start.
+
+The domain shows up in what ProsperO does by default when it builds an agent:
+- **Identity before details:** verify the caller (e.g. full name and date of birth) before discussing an existing appointment or record.
+- **No medical advice:** the agent never diagnoses or advises on treatment; it offers to book or to pass the question to staff.
+- **Emergencies first:** an urgent or emergency path that tells the caller to hang up and call emergency services, or transfers them, reachable from the start of the call.
+- **Collect only what's needed:** each piece of patient data must serve the call's purpose, in line with handling protected health information (PHI) carefully.
+- **Spoken, plain language:** short replies, one question at a time, confirmation of key details (date, time, name) before ending.
+
+**Product argument.**
+- **It matches Prosper's market.** Prosper's clients are healthcare organisations, and the deployment team's manual work is building agents for them. A copilot that already knows how a clinic call should go produces a usable first draft, not a generic one that needs heavy rework.
+- **Fewer iterations to a deployable agent.** The safety basics (emergencies, no medical advice, identity checks) are present from the first draft instead of being remembered by whoever writes the prompt.
+- **It's a sharper product than a generic agent builder:** specialist copilots can be judged on outcomes in their domain.
+
+**AI angle.**
+- **A narrower domain makes the LLM more reliable.** The system prompt can carry a concrete checklist, real examples of good clinic flows, and domain vocabulary, instead of generic advice. That improves first drafts more than a larger model would.
+- **Safety-critical behaviour shouldn't depend on the user remembering to ask for it.** Emergency escalation and refusing medical advice are built in by default, and can later be checked by validation rules. For example: "no emergency path reachable from the start node" as a warning, using the rule registry from AD-2.
+- **Evaluation gets concrete.** Test scenarios for Phase 2's regression tests (a new patient booking, a caller describing chest pain, a refill request) come from a known set of call types.
+
+**Alternatives considered.**
+- **A general-purpose copilot** for any kind of voice agent. Rejected: the defaults would be weaker exactly where mistakes are most costly, and nothing would distinguish it from generic builders.
+- **One specialty only** (e.g. dental). Rejected as too narrow for Prosper's client base; the same core flows recur across specialties.
+- **Pluggable "domain packs"** (medical, legal, retail…), each with its own prompt, examples and rules. Deferred: a good design once a second domain exists, premature with one.
+
+**Cost of reversal.** Low to medium. The architecture (operations, validation, versions, calls) is domain-neutral. The specialisation lives in ProsperO's system prompt, examples and any medical validation rules, which could later become one domain pack among several.
+
+**Likely challenges.**
+- *"Is a prompt enough for compliance?"* No. Defaults in the prompt make agents behave more safely, but compliance with regulations such as HIPAA also needs agreements with vendors, encryption, access controls and retention policies (gap 5). ProsperO makes better agents; it doesn't make the platform compliant.
+- *"What if the LLM drops a safety default while editing?"* Possible, since prompt guidance isn't enforcement. Validation rules for the critical defaults would catch it on every edit, by a person or by ProsperO. That's the planned backstop.
+- *"What about a client outside medicine?"* ProsperO can still build their agent, but its defaults will assume a medical practice and need overriding. Domain packs are the answer if that becomes common.
+- *"Medical knowledge varies by country and specialty."* True, so ProsperO should ask about specifics that matter (e.g. the local emergency number, after-hours policy) rather than assume them.
+
+**Revisit when** a client outside medicine needs a copilot (introduce domain packs), or a specialty needs rules the general medical defaults don't cover.
 
 ---
 
