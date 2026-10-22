@@ -23,6 +23,7 @@ This file records the project's architectural decisions (ADs): decisions that ar
 | AD-9 | Every edit to an agent is a named, serialisable operation |
 | AD-10 | A transition without the data it requires is refused, and the call stays in its node |
 | AD-11 | ProsperO, the copilot, specialises in voice agents for the medical field |
+| AD-12 | Operations exist in Python and TypeScript, held identical by shared test cases |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -249,7 +250,7 @@ Records are read through `/api/calls`. The client is told the call id when it co
 
 ## AD-9: Every edit to an agent is a named, serialisable operation
 
-**Decision.** The editor's draft only changes through `applyOp(agent, op)` in `frontend/src/lib/operations.ts`. That function is pure and is the single place where an agent is modified. An `Op` is plain data: `addNode`, `renameNode`, `updateEdge`, `moveNodes` and so on, each with a readable label from `describeOp`. The canvas, the inspector, JSON import and undo/redo all dispatch operations through the store (`frontend/src/lib/store.ts`). Operations whose meaning spans the graph handle every reference: renaming a node rewrites the start node and every edge that targets it, and deleting a node keeps the transitions that pointed at it but clears their target, so validation flags each one.
+**Decision.** The editor's draft only changes through `applyOp(agent, op)` in `frontend/src/lib/operations/`. That function is pure and is the single place where an agent is modified. An `Op` is plain data: `addNode`, `renameNode`, `updateEdge`, `moveNodes` and so on, each with a readable label from `describeOp`. The canvas, the inspector, JSON import and undo/redo all dispatch operations through the store (`frontend/src/lib/store.ts`). Operations whose meaning spans the graph handle every reference: renaming a node rewrites the start node and every edge that targets it, and deleting a node keeps the transitions that pointed at it but clears their target, so validation flags each one.
 
 **Product argument.**
 - One undo/redo history, with readable labels, covers every kind of edit.
@@ -269,7 +270,7 @@ Records are read through `/api/calls`. The client is told the call id when it co
 **Cost of reversal.** High once the copilot exists. Its tool definitions would be these operations.
 
 **Likely challenges.**
-- *"The operations only exist in the frontend, so the copilot can't use them from the backend."* True today. The backend stores whole versions. For a server-side copilot, port `applyOp` to Python (it's about 100 lines and the tests document its behaviour), or let the copilot return operations that the editor applies.
+- *"Can the backend use the operations too?"* Yes, since AD-12: the same operations exist in Python, and both implementations are held to the same shared test cases. ProsperO applies them on the backend.
 - *"Undo history is lost on reload."* True. It's per session. Versions (AD-4) are the long-term history.
 
 **Revisit when** you build the copilot's tool interface (decide where `applyOp` runs), or need edits from several people at once (operations are the basis for merging).
@@ -345,6 +346,38 @@ The domain shows up in what ProsperO does by default when it builds an agent:
 - *"Medical knowledge varies by country and specialty."* True, so ProsperO should ask about specifics that matter (e.g. the local emergency number, after-hours policy) rather than assume them.
 
 **Revisit when** a client outside medicine needs a copilot (introduce domain packs), or a specialty needs rules the general medical defaults don't cover.
+
+---
+
+## AD-12: Operations exist in Python and TypeScript, held identical by shared test cases
+
+**Decision.** The operations from AD-9 now have two implementations:
+- **TypeScript** (`frontend/src/lib/operations/`), which the editor uses for people's edits, undo/redo and previews;
+- **Python** (`backend/agent_builder/operations/`), which ProsperO will use on the backend to build and edit agents.
+
+Both are organised the same way: one entry per operation, in a file per area (`agent`, `node`, `edge`), holding how it's applied and how it's labelled. The Python entry also holds the operation's JSON schema, which ProsperO's tool definitions are built from. In TypeScript, a mapped type makes the build fail if any operation lacks an entry. Operations are the same plain JSON in both languages, so an operation produced on the backend can be applied unchanged in the browser.
+
+**`shared/operation-cases.json`** keeps the two identical. Each case names a starting agent, an operation, and the expected result, label or exact error message. Both pytest and Vitest run every case and also check that the input agent is never modified. Changing either implementation without the other fails a test.
+
+**Product argument.** ProsperO's edits and a person's edits behave exactly the same. A rename by ProsperO rewrites references the way a rename on the canvas does, and an invalid edit fails with the same message. So what the user previews in the browser is precisely what was built on the server.
+
+**AI angle.**
+- **Precise errors the LLM can act on.** An operation that doesn't fit is refused with a specific message ("No node named 'verify_patient'.", "Node 'greeting' has no transition #3."), returned to the LLM so it can correct itself. Both languages raise errors instead of doing nothing silently, for example for a negative transition index or an unknown start node.
+- **Tools that match the code.** ProsperO's tool definitions come from the same registry entry that applies the operation, so the LLM can't be told about a field the code doesn't accept.
+
+**Alternatives considered.**
+- **Operations only in the browser, with ProsperO streaming them there to be applied.** Rejected: the backend couldn't validate or repair ProsperO's work before showing it, and a proposal would depend on a browser tab being open.
+- **Operations only on the backend,** with the editor calling the API for every edit. Rejected: every keystroke and drag would wait for the network, and undo/redo would need the server.
+- **Generating one implementation from the other,** or from a shared schema. Rejected for now: the operations are short, and the shared cases catch differences with far less machinery. It would be worth reconsidering if the number of operations grows a lot.
+
+**Cost of reversal.** Medium. Dropping one implementation means moving its users (the editor or ProsperO) to the other side of the network.
+
+**Likely challenges.**
+- *"Two implementations means double the work."* Each operation is about ten lines in each language, and the shared cases make a missed change fail immediately. The duplication is small and checked.
+- *"The shared cases might not cover everything."* A test fails if any registered operation has no shared case, but a case can still miss an edge case within an operation. New behaviour should come with a new shared case.
+- *"The TypeScript side has no schema."* True. It doesn't need one: the editor builds operations in code, where TypeScript's types check them. Schemas live where operations arrive as untrusted JSON, which is the backend.
+
+**Revisit when** there are many more operations, or a third consumer (a CLI, another service) needs them; then generating implementations from one definition would pay off.
 
 ---
 
