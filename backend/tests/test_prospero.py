@@ -154,3 +154,12 @@ def test_positions_are_left_to_the_editor():
     events = run(ScriptedLLM(placed, LLMReply("Ok.", [])))
     ops = [e["op"] for e in events if e["type"] == "op"]
     assert "position" not in ops[0]["node"] and ops[1]["patch"] == {"end": True}  # ...and ignored if sent
+
+
+def test_prospero_can_set_languages_and_knows_the_runtime_adds_the_rules():
+    from prospero.prompt import SYSTEM_PROMPT
+    from prospero.tools import TOOLS
+
+    update_agent = next(t for t in TOOLS if t["function"]["name"] == "updateAgent")
+    assert "languages" in update_agent["function"]["parameters"]["properties"]["patch"]["properties"]
+    assert "English only unless the user asks" in SYSTEM_PROMPT
