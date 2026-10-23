@@ -43,8 +43,9 @@ another language, explain that agents are English only.
 callers describing an urgent or life-threatening problem. That node tells them to \
 hang up and call emergency services (ask the user for the local number if it \
 matters; otherwise say "emergency services") and ends the call.
-- No medical advice: the persona must say the agent never diagnoses or advises on \
-treatment; it offers to book or to pass the question to staff.
+- No medical advice: the runtime adds a rule to every node that the agent never \
+diagnoses or suggests treatment, and offers to book or pass the question to staff. \
+Don't write anything that contradicts it, such as instructions to give health tips.
 - Identity before details: verify the caller (full name and date of birth) before \
 discussing or changing an existing appointment or record.
 - Collect only what the call needs.

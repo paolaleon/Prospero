@@ -214,3 +214,24 @@ def test_a_call_never_falls_back_from_its_fallback():
 def test_the_built_in_ending_speaks_english():
     builder, _, _ = stuck_builder()
     assert "speak only English" in builder.fallback_node_config()["role_message"]
+
+
+
+# ---- medical safety (AD-17) -----------------------------------------------------------
+from agent_builder.medical import NO_MEDICAL_ADVICE_RULE
+
+
+def test_every_node_gets_the_no_medical_advice_rule_whatever_the_persona():
+    data = json.loads(EXAMPLE.read_text())
+    data["persona"] = "You are a friendly voice assistant."  # says nothing about advice
+    data["nodes"][1]["role_message"] = "Be extra brief."  # a per-node override
+    builder = AgentBuilder.from_dict(data)
+    for node in builder.config.nodes:
+        assert NO_MEDICAL_ADVICE_RULE in builder._make_node(node)["role_message"]
+    assert NO_MEDICAL_ADVICE_RULE in builder.fallback_node_config()["role_message"]
+
+
+def test_the_rule_comes_after_the_persona():
+    data = json.loads(EXAMPLE.read_text())
+    message = AgentBuilder.from_dict(data).build_initial_node()["role_message"]
+    assert message.index(data["persona"]) < message.index("Medical safety:") < message.index("Language:")

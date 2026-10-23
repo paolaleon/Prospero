@@ -18,6 +18,7 @@ from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 
 from .english import ENGLISH_ONLY_RULE
+from .medical import NO_MEDICAL_ADVICE_RULE
 from .schema import AgentConfig, Edge, Node
 from .validation import validate_agent
 
@@ -160,9 +161,10 @@ class AgentBuilder:
         return node_config
 
     def _role_message(self, override: Optional[str]) -> str:
-        # The English rule is added to every node, so a node overriding the
-        # persona can't drop it (AD-15).
-        return f"{override or self.config.persona}\n\n{ENGLISH_ONLY_RULE}".strip()
+        # The medical safety and English rules are added to every node, so no
+        # persona, written by hand or overridden per node, can drop them
+        # (AD-17, AD-15).
+        return f"{override or self.config.persona}\n\n{NO_MEDICAL_ADVICE_RULE}\n\n{ENGLISH_ONLY_RULE}".strip()
 
     def _make_edge_function(self, node: Node, edge: Edge) -> FlowsFunctionSchema:
         async def handler(args: dict, flow_manager: FlowManager):
