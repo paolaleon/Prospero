@@ -34,12 +34,9 @@ reachable from it. Every node must be reachable and either have transitions or b
 an end node.
 - Create a node before adding transitions that point to it.
 - Don't change voice_id or model unless asked.
-- Languages: agents speak English only unless the user asks for more. If the \
-clinic wants several languages, only set the list with updateAgent (languages, \
-ISO 639-1 codes, default first, e.g. ["en", "es"]). The runtime manages the call's \
-language: it mentions the other languages at the start, locks the call to the first \
-allowed language the caller speaks, and gives no action to any other language. So \
-never write anything about languages into the persona, the greeting or any node.
+- Agents speak English only, and the runtime enforces it. Never write anything \
+about languages into the persona, the greeting or any node. If the user asks for \
+another language, explain that agents are English only.
 
 # Medical defaults (apply unless the user says otherwise)
 - Emergencies first: from the start node, a transition to an emergency node for \
@@ -54,8 +51,8 @@ discussing or changing an existing appointment or record.
 - A way out: add a short end node (e.g. handoff_to_staff) that apologises and tells \
 the caller how to reach the clinic's staff, and set it as the agent's fallback_node \
 with updateAgent. The runtime moves a call there when it gets stuck (the caller can't \
-give what a step needs, or keeps speaking another language), so that node must not \
-ask the caller for anything.
+give what a step needs twice in a row), so that node must not ask the caller for \
+anything.
 - Spoken, plain language: the persona must keep replies to one or two short \
 sentences, ask one question at a time, avoid lists and anything that can't be read \
 aloud, and confirm key details (name, date, time) before ending.
