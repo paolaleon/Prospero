@@ -29,7 +29,9 @@ from agent_builder import languages
 
 # (action, language, text): called when the call locks to a language
 # ("locked") and when an utterance is blocked ("blocked"). bot.py records them.
-LanguageEvent = Callable[[str, Optional[str], str], Awaitable[None]]
+# Returning True for a blocked utterance means it was handled (the call moved
+# to its fallback, AD-16), so the guard drops it instead of passing the note on.
+LanguageEvent = Callable[[str, Optional[str], str], Awaitable[Optional[bool]]]
 # Called after every final utterance with the guard, so the builder can follow
 # its state (call_language, blocked).
 StateChange = Callable[["LanguageGuard"], None]
@@ -73,7 +75,10 @@ class LanguageGuard(FrameProcessor):
                 )
             if decision == "block":
                 self.blocked = True
-                await self._emit("blocked", spoken, frame.text)
+                if await self._emit("blocked", spoken, frame.text):
+                    if self._on_change:
+                        self._on_change(self)
+                    return  # handled: the fallback speaks instead
                 frame = TranscriptionFrame(
                     text=languages.blocked_note(spoken, self.allowed, self.call_language),
                     user_id=frame.user_id,
@@ -95,6 +100,5 @@ class LanguageGuard(FrameProcessor):
             return "lock" if spoken in self.allowed else "block"
         return "pass" if spoken == self.call_language else "block"
 
-    async def _emit(self, action: str, spoken: Optional[str], text: str) -> None:
-        if self._on_event:
-            await self._on_event(action, spoken, text)
+    async def _emit(self, action: str, spoken: Optional[str], text: str) -> bool:
+        return bool(self._on_event and await self._on_event(action, spoken, text))

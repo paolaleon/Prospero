@@ -201,3 +201,14 @@ def test_languages_must_be_supported(languages, message):
 
 def test_supported_languages_pass():
     assert issues(agent(languages=["en", "es", "zh"])) == set()
+
+
+# ---- fallback node (AD-16) -----------------------------------------------------------
+def test_fallback_node_must_exist():
+    assert ("error", "Fallback node 'nope' is not a defined node.", None, None) in issues(agent(fallback_node="nope"))
+
+
+def test_a_fallback_node_counts_as_reachable():
+    data = agent(fallback_node="staff")
+    data["nodes"].append({"name": "staff", "task_messages": [{"role": "developer", "content": "Apologise."}], "end": True})
+    assert issues(data) == set()  # not "Unreachable from the start node"

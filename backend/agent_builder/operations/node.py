@@ -45,6 +45,8 @@ def rename_node(agent: dict, op: dict) -> dict:
     # A rename rewrites every reference, so the graph stays connected.
     if agent.get("initial_node") == old:
         agent["initial_node"] = new
+    if agent.get("fallback_node") == old:
+        agent["fallback_node"] = new
     for node in agent["nodes"]:
         for edge in node.get("edges") or []:
             if edge.get("target") == old:
@@ -65,6 +67,8 @@ def delete_node(agent: dict, op: dict) -> dict:
     # points at each one.
     if agent.get("initial_node") == name:
         agent["initial_node"] = ""
+    if agent.get("fallback_node") == name:
+        agent.pop("fallback_node")  # back to the built-in ending
     agent["nodes"] = [n for n in agent["nodes"] if n.get("name") != name]
     for node in agent["nodes"]:
         for edge in node.get("edges") or []:

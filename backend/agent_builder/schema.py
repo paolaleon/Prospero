@@ -78,6 +78,8 @@ class AgentConfig:
     voice_id: str = DEFAULT_VOICE_ID
     model: str = DEFAULT_MODEL
     languages: list = field(default_factory=lambda: list(DEFAULT_LANGUAGES))  # default first
+    # Where a call goes when it gets stuck in a node; None: a built-in polite ending (AD-16).
+    fallback_node: Optional[str] = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "AgentConfig":
@@ -89,4 +91,5 @@ class AgentConfig:
             voice_id=d.get("voice_id", DEFAULT_VOICE_ID),
             model=d.get("model", DEFAULT_MODEL),
             languages=list(d.get("languages") or DEFAULT_LANGUAGES),
+            fallback_node=d.get("fallback_node") or None,
         )

@@ -64,6 +64,10 @@ AGENT_FIELDS = {
         "description": "ISO 639-1 codes the agent speaks, default first (e.g. [\"en\", \"es\"]). English only if omitted.",
     },
     "persona": {"type": "string", "description": "Applies to every node unless overridden."},
+    "fallback_node": {
+        "type": ["string", "null"],
+        "description": "Node a call is moved to when it gets stuck (2 failures in a row). Null: end politely.",
+    },
     "voice_id": {"type": "string"},
     "model": {"type": "string"},
 }

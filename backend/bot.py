@@ -50,6 +50,7 @@ from pipecat_flows import FlowManager
 import api
 import store
 from agent_builder import AgentBuilder, languages
+from agent_builder.builder import BUILT_IN_FALLBACK
 from language_guard import LanguageGuard
 
 # Load .env next to this file, so the bot runs the same from the repo root or backend/.
@@ -97,13 +98,19 @@ class CallRecorder:
         self.record["collected"].update(args)
         return self.add("transition", from_node=from_node, function=function, to_node=to_node, args=args)
 
+    def fallback(self, from_node: str, reason: str, to_node: str) -> dict:
+        # The call got stuck and was moved on (AD-16): that's where it now is.
+        self.record["final_node"] = to_node
+        return self.add("fallback", from_node=from_node, reason=reason, to_node=to_node)
+
     def refusal(self, node: str, function: str, args: dict, problems: list) -> dict:
         # A transition the LLM tried without the data it requires. Repeated
         # refusals in one node are a sign its instructions need work.
         return self.add("refused", node=node, function=function, args=args, problems=problems)
 
     def save(self) -> None:
-        end_nodes = {n["name"] for n in self.record["agent"]["nodes"] if n.get("end")}
+        # The built-in fallback ends the call too.
+        end_nodes = {n["name"] for n in self.record["agent"]["nodes"] if n.get("end")} | {BUILT_IN_FALLBACK}
         self.record["ended_at"] = store.now()
         self.record["ended_by"] = "agent" if self.record["final_node"] in end_nodes else "caller"
         store.save_call(self.record)
@@ -149,21 +156,33 @@ async def run_bot(
         await notify_event(recorder.transition(from_node, function, to_node, args))
         await notify_node(to_node, from_node=from_node, function=function, args=args)
 
-    async def on_language(action: str, language, text: str) -> None:
+    async def on_language(action: str, language, text: str) -> bool:
         # "locked": the call now continues in `language`; "blocked": the caller
         # spoke a language the call doesn't use, and their words weren't passed on.
         await notify_event(recorder.add("language", action=action, language=language, text=text))
+        if action == "blocked" and builder.note_utterance(blocked=True):
+            # Stuck on language: move to the fallback, which speaks instead (AD-16).
+            await flow_manager.set_node_from_config(await builder.take_fallback("language"))
+            return True
+        return False
 
     def follow_guard(guard: LanguageGuard) -> None:
         builder.call_language = guard.call_language
         builder.language_blocked = guard.blocked
+        if not guard.blocked:
+            builder.note_utterance(blocked=False)
 
     language_guard = LanguageGuard(config.languages, on_event=on_language, on_change=follow_guard)
 
     async def on_transition_refused(node: str, function: str, args: dict, problems: list) -> None:
         await notify_event(recorder.refusal(node, function, args, problems))
 
+    async def on_fallback(from_node: str, reason: str, to_node: str) -> None:
+        await notify_event(recorder.fallback(from_node, reason, to_node))
+        await notify_node(to_node, from_node=from_node, function="fallback", args={})
+
     builder.on_transition = on_transition
+    builder.on_fallback = on_fallback
     builder.on_transition_refused = on_transition_refused
 
     context = LLMContext()

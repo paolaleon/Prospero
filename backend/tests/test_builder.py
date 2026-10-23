@@ -157,3 +157,74 @@ def test_transitions_are_refused_while_the_caller_is_blocked():
     result, next_node, state = take_first_transition(builder, {"intent": "book"})
     assert next_node is None and state == {}
     assert result["error"].startswith("The caller isn't speaking English, so no action can be taken.")
+
+
+# ---- recovering from a stuck node (AD-16) ----------------------------------------
+from agent_builder.builder import BUILT_IN_FALLBACK
+
+
+def stuck_builder(**overrides):
+    """collect_details first (requires full_name and reason), with a fallback listener."""
+    data = json.loads(EXAMPLE.read_text())
+    data["initial_node"] = "collect_details"
+    data.update(overrides)
+    builder = AgentBuilder.from_dict(data)
+    fallbacks = []
+
+    async def on_fallback(*a):
+        fallbacks.append(a)
+
+    builder.on_fallback = on_fallback
+    handler = builder.build_initial_node()["functions"][0].handler
+    attempt = lambda args: asyncio.run(handler(args, SimpleNamespace(state={})))  # noqa: E731
+    return builder, attempt, fallbacks
+
+
+def test_two_refusals_in_a_row_move_the_call_to_a_polite_ending():
+    builder, attempt, fallbacks = stuck_builder()
+    _, first = attempt({"full_name": "Ana"})
+    assert first is None  # asked again
+    result, second = attempt({"full_name": "Ana"})
+    assert second["name"] == BUILT_IN_FALLBACK
+    assert second["functions"] == [] and second["post_actions"] == [{"type": "end_conversation"}]
+    assert "staff can help directly" in second["task_messages"][0]["content"]
+    assert "moves on to wrap up" in result["error"]
+    assert fallbacks == [("collect_details", "missing information", BUILT_IN_FALLBACK)]
+
+
+def test_the_agents_own_fallback_node_is_used_when_set():
+    builder, attempt, fallbacks = stuck_builder(fallback_node="confirm")
+    attempt({})
+    _, second = attempt({})
+    assert second["name"] == "confirm"
+    assert fallbacks == [("collect_details", "missing information", "confirm")]
+
+
+def test_progress_resets_the_count():
+    builder, attempt, _ = stuck_builder()
+    attempt({"full_name": "Ana"})  # one miss
+    _, moved = attempt({"full_name": "Ana", "reason": "checkup"})
+    assert moved["name"] == "offer_times"
+    assert builder.current_node == "offer_times" and builder._refusals == 0
+
+
+def test_language_blocks_count_in_a_row_and_reset_on_the_call_language():
+    builder, _, _ = stuck_builder()
+    assert builder.note_utterance(blocked=True) is False
+    assert builder.note_utterance(blocked=False) is False  # back in the call's language
+    assert builder.note_utterance(blocked=True) is False
+    assert builder.note_utterance(blocked=True) is True  # two in a row
+
+
+def test_a_call_never_falls_back_from_its_fallback():
+    builder, _, _ = stuck_builder()
+    asyncio.run(builder.take_fallback("language"))
+    assert builder.current_node == BUILT_IN_FALLBACK
+    builder.note_utterance(blocked=True)
+    assert builder.note_utterance(blocked=True) is False
+
+
+def test_the_built_in_ending_speaks_the_calls_language():
+    builder, _, _ = stuck_builder(languages=["en", "es"])
+    builder.call_language = "es"
+    assert "speak only Spanish" in builder.fallback_node_config()["role_message"]

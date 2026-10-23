@@ -70,3 +70,15 @@ def test_interim_results_in_a_blocked_language_are_dropped():
     interim = InterimTranscriptionFrame(text="Hola", user_id="caller", timestamp="t", language="spa")
     down, _, _ = run_guard(["en"], [interim])
     assert not any(isinstance(f, InterimTranscriptionFrame) for f in down)
+
+
+def test_a_handled_block_is_dropped_so_the_fallback_speaks_alone():
+    states = []
+
+    async def on_event(action, language, text):
+        return action == "blocked"  # the runtime moved the call to its fallback
+
+    guard = LanguageGuard(["en"], on_event=on_event, on_change=lambda g: states.append(g.blocked))
+    down, _ = asyncio.run(run_test(guard, frames_to_send=[said("Hola.", "spa")], expected_down_frames=None))
+    assert texts(down) == []  # neither the words nor the note reach the LLM
+    assert states == [True]
