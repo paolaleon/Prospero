@@ -17,7 +17,7 @@ from typing import Awaitable, Callable, Optional, Union
 from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 
-from .languages import language_rule
+from . import languages
 from .schema import AgentConfig, Edge, Node
 from .validation import validate_agent
 
@@ -70,6 +70,11 @@ class AgentBuilder:
         # the first transition: `builder.on_transition = my_listener`.
         self.on_transition: Optional[TransitionHook] = None
         self.on_transition_refused: Optional[RefusalHook] = None
+        # Set by the runtime's language guard (AD-15): the call's locked-in
+        # language, and whether the caller's last words were in another one,
+        # in which case every transition is refused.
+        self.call_language: Optional[str] = None
+        self.language_blocked = False
         self._nodes_by_name = {n.name: n for n in config.nodes}
 
     # ---- loading -----------------------------------------------------------
@@ -94,8 +99,11 @@ class AgentBuilder:
         node_config: NodeConfig = {
             "name": node.name,
             # The language rule is added to every node, so a node overriding the
-            # persona can't drop it (AD-15).
-            "role_message": f"{node.role_message or self.config.persona}\n\n{language_rule(self.config.languages)}".strip(),
+            # persona can't drop it (AD-15). It names the call's language once known.
+            "role_message": (
+                f"{node.role_message or self.config.persona}\n\n"
+                f"{languages.language_rule(self.config.languages, self.call_language)}"
+            ).strip(),
             "task_messages": node.task_messages,
             "functions": [self._make_edge_function(node, edge) for edge in node.edges],
         }
@@ -110,7 +118,10 @@ class AgentBuilder:
 
     def _make_edge_function(self, node: Node, edge: Edge) -> FlowsFunctionSchema:
         async def handler(args: dict, flow_manager: FlowManager):
-            problems = check_args(edge, args)
+            if self.language_blocked:
+                problems = [languages.refusal(self.call_language, self.config.languages)]
+            else:
+                problems = check_args(edge, args)
             if problems:
                 # Stay in this node. Returning no next node makes Flows hand this
                 # result straight back to the LLM, which can ask the caller again.

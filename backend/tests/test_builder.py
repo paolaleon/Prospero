@@ -124,29 +124,36 @@ def test_a_failing_refusal_listener_does_not_break_the_call():
 
 
 # ---- languages (AD-15) ------------------------------------------------------------
-def role_message(data, node_index=0):
-    builder = AgentBuilder.from_dict(data)
+def role_message(builder, data, node_index=0):
     return builder._make_node(builder._nodes_by_name[data["nodes"][node_index]["name"]])["role_message"]
 
 
 def test_every_node_gets_the_english_only_rule_by_default():
     data = json.loads(EXAMPLE.read_text())
-    message = role_message(data)
+    message = role_message(AgentBuilder.from_dict(data), data)
     assert message.startswith(data["persona"])
-    assert "speak only English, whatever language the caller uses" in message
-    assert "offer to take their name and phone number so the clinic's staff can call them back" in message
+    assert "Language: speak only English." in message
 
 
 def test_a_persona_override_keeps_the_language_rule():
     data = json.loads(EXAMPLE.read_text())
     data["nodes"][1]["role_message"] = "Be extra brief."
-    message = role_message(data, 1)
+    message = role_message(AgentBuilder.from_dict(data), data, 1)
     assert message.startswith("Be extra brief.") and "speak only English" in message
 
 
-def test_several_languages_offer_a_choice():
+def test_nodes_built_after_the_lock_name_the_call_language():
     data = json.loads(EXAMPLE.read_text())
     data["languages"] = ["en", "es"]
-    message = role_message(data)
-    assert "start the call in English, and at the start offer the caller a choice of English or Spanish" in message
-    assert "Never use any other language." in message
+    builder = AgentBuilder.from_dict(data)
+    assert "can also speak Spanish" in role_message(builder, data)
+    builder.call_language = "es"
+    assert "Language: speak only Spanish." in role_message(builder, data)
+
+
+def test_transitions_are_refused_while_the_caller_is_blocked():
+    builder = AgentBuilder.from_json(EXAMPLE)
+    builder.language_blocked = True
+    result, next_node, state = take_first_transition(builder, {"intent": "book"})
+    assert next_node is None and state == {}
+    assert result["error"].startswith("The caller isn't speaking English, so no action can be taken.")
