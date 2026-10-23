@@ -44,6 +44,8 @@ from pipecat.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.turns.user_start import TranscriptionUserTurnStartStrategy, VADUserTurnStartStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 from pipecat_flows import FlowManager
 
@@ -117,6 +119,20 @@ class CallRecorder:
         logger.info(f"Recorded call {self.call_id} ({len(self.record['events'])} events)")
 
 
+def user_turn_strategies() -> UserTurnStrategies:
+    """When the caller counts as having started speaking (which interrupts the bot).
+
+    Pipecat's default also treats any *partial* transcript as the caller starting
+    to speak. Speech-to-text can send a stray partial a moment after a sentence is
+    final; after a transition, that's just when the new node's reply is ready, so
+    the reply was interrupted and lost. Voice detection still catches real
+    barge-in, and final transcripts still count for speech it misses.
+    """
+    return UserTurnStrategies(
+        start=[VADUserTurnStartStrategy(), TranscriptionUserTurnStartStrategy(use_interim=False)]
+    )
+
+
 async def run_bot(
     transport: BaseTransport,
     runner_args: RunnerArguments,
@@ -188,7 +204,9 @@ async def run_bot(
     context = LLMContext()
     context_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(), user_turn_strategies=user_turn_strategies()
+        ),
     )
 
     pipeline = Pipeline(

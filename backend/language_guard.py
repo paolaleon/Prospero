@@ -70,9 +70,13 @@ class LanguageGuard(FrameProcessor):
                     LLMMessagesAppendFrame([{"role": "system", "content": languages.lock_message(spoken)}], run_llm=False),
                     direction,
                 )
-                await self.push_frame(
-                    TTSUpdateSettingsFrame(settings={}, delta=ElevenLabsTTSService.Settings(language=spoken)), direction
-                )
+                # The voice starts in the default language; only switch it if the
+                # call locked to another one (a switch reconnects the voice).
+                if spoken != self.allowed[0]:
+                    await self.push_frame(
+                        TTSUpdateSettingsFrame(settings={}, delta=ElevenLabsTTSService.Settings(language=spoken)),
+                        direction,
+                    )
             if decision == "block":
                 self.blocked = True
                 if await self._emit("blocked", spoken, frame.text):

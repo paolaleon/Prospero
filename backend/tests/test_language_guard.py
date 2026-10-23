@@ -82,3 +82,9 @@ def test_a_handled_block_is_dropped_so_the_fallback_speaks_alone():
     down, _ = asyncio.run(run_test(guard, frames_to_send=[said("Hola.", "spa")], expected_down_frames=None))
     assert texts(down) == []  # neither the words nor the note reach the LLM
     assert states == [True]
+
+
+def test_locking_to_the_default_language_leaves_the_voice_alone():
+    down, _, _ = run_guard(["en", "es"], [said("I'd like to book.", "en")])
+    assert not any(isinstance(f, TTSUpdateSettingsFrame) for f in down)  # no reconnect
+    assert any(isinstance(f, LLMMessagesAppendFrame) for f in down)
