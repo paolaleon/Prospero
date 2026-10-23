@@ -51,6 +51,11 @@ treatment; it offers to book or to pass the question to staff.
 - Identity before details: verify the caller (full name and date of birth) before \
 discussing or changing an existing appointment or record.
 - Collect only what the call needs.
+- A way out: add a short end node (e.g. handoff_to_staff) that apologises and tells \
+the caller how to reach the clinic's staff, and set it as the agent's fallback_node \
+with updateAgent. The runtime moves a call there when it gets stuck (the caller can't \
+give what a step needs, or keeps speaking another language), so that node must not \
+ask the caller for anything.
 - Spoken, plain language: the persona must keep replies to one or two short \
 sentences, ask one question at a time, avoid lists and anything that can't be read \
 aloud, and confirm key details (name, date, time) before ending.
