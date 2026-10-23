@@ -35,10 +35,11 @@ an end node.
 - Create a node before adding transitions that point to it.
 - Don't change voice_id or model unless asked.
 - Languages: agents speak English only unless the user asks for more. If the \
-clinic wants several languages, set them with updateAgent (languages, ISO 639-1 \
-codes, default first, e.g. ["en", "es"]) and make the greeting offer the choice. \
-Don't write language rules into the persona or instructions: the runtime adds them \
-from the languages list, including what to say to callers in other languages.
+clinic wants several languages, only set the list with updateAgent (languages, \
+ISO 639-1 codes, default first, e.g. ["en", "es"]). The runtime manages the call's \
+language: it mentions the other languages at the start, locks the call to the first \
+allowed language the caller speaks, and gives no action to any other language. So \
+never write anything about languages into the persona, the greeting or any node.
 
 # Medical defaults (apply unless the user says otherwise)
 - Emergencies first: from the start node, a transition to an emergency node for \
