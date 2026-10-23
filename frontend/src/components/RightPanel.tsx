@@ -1,4 +1,4 @@
-import { History, Pencil, Phone } from "lucide-react";
+import { FlaskConical, History, Pencil, Phone } from "lucide-react";
 import { useEffect } from "react";
 import { useCall } from "../lib/call";
 import { useEditor } from "../lib/store";
@@ -6,8 +6,9 @@ import type { CallRecord } from "../lib/types";
 import HistoryPanel from "./HistoryPanel";
 import Inspector from "./Inspector";
 import TestCallPanel from "./TestCallPanel";
+import TestsPanel from "./TestsPanel";
 
-export type Tab = "edit" | "call" | "history";
+export type Tab = "edit" | "call" | "tests" | "history";
 
 export default function RightPanel({
   tab,
@@ -41,6 +42,7 @@ export default function RightPanel({
           label="Test call"
           dot={inCall}
         />
+        <TabButton active={tab === "tests"} onClick={() => onTab("tests")} icon={<FlaskConical size={14} />} label="Tests" />
         <TabButton active={tab === "history"} onClick={() => onTab("history")} icon={<History size={14} />} label="History" />
       </nav>
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -53,7 +55,10 @@ export default function RightPanel({
             }}
           />
         )}
-        {tab === "history" && <HistoryPanel openCall={openCall} onOpenCall={onOpenCall} />}
+        {tab === "tests" && <TestsPanel />}
+        {tab === "history" && (
+          <HistoryPanel openCall={openCall} onOpenCall={onOpenCall} onSavedTest={() => onTab("tests")} />
+        )}
       </div>
     </div>
   );

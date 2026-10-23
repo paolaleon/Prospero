@@ -141,6 +141,48 @@ export interface CallRecord extends Omit<CallSummary, "turns" | "agent_name"> {
   events: CallEvent[];
 }
 
+// Regression tests: a recorded call's caller turns, replayed against the agent
+// (backend/regression/, AD-18).
+export interface TestExpect {
+  final_node: string | null;
+  collected: string[];
+  checks: string[];
+}
+
+export interface RegressionTest {
+  id: string;
+  name: string;
+  created_at: string;
+  from_call: string | null;
+  caller_turns: string[];
+  expect: TestExpect;
+  last_run: { at: string; agent_version: number | null; passed: number; total: number } | null;
+}
+
+export interface TestCheckResult {
+  kind: "final_node" | "collected" | "check";
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface TestRun {
+  passed: boolean;
+  error: string | null;
+  final_node?: string;
+  unused_turns?: number;
+  events: CallEvent[];
+  results: TestCheckResult[];
+}
+
+export interface TestRunResult {
+  at: string;
+  agent_version: number | null;
+  passed: number;
+  total: number;
+  runs: TestRun[];
+}
+
 export interface Voice {
   voice_id: string;
   name: string;
