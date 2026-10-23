@@ -1,4 +1,4 @@
-import { ArrowRight, Ban, Languages } from "lucide-react";
+import { ArrowRight, Ban, Languages, LifeBuoy } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { CallEvent } from "../lib/types";
 
@@ -16,6 +16,21 @@ export default function Transcript({ events, follow = false }: { events: CallEve
   return (
     <div className="space-y-2">
       {events.map((e, i) => {
+        if (e.type === "fallback") {
+          return (
+            <div key={i} className="rounded-md border border-amber-300 bg-amber-100 px-2.5 py-1.5 text-xs text-amber-900">
+              <div className="flex items-center gap-1 font-mono">
+                <LifeBuoy size={12} />
+                <span>{e.from_node}</span>
+                <ArrowRight size={12} />
+                <span className="font-semibold">{e.to_node === "built_in_fallback" ? "polite ending" : e.to_node}</span>
+              </div>
+              <p className="mt-0.5">
+                Stuck ({e.reason === "language" ? "the caller kept speaking another language" : "required information missing twice"}), so the call moved on.
+              </p>
+            </div>
+          );
+        }
         if (e.type === "language") {
           return e.action === "locked" ? (
             <p key={i} className="flex items-center justify-center gap-1 text-xs text-slate-500">

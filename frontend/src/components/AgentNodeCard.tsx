@@ -1,5 +1,5 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { AlertTriangle, CircleAlert, Flag, Play, Plus, Sparkles } from "lucide-react";
+import { AlertTriangle, CircleAlert, Flag, LifeBuoy, Play, Plus, Sparkles } from "lucide-react";
 import type { Change } from "../lib/diff";
 import { useEditor } from "../lib/store";
 import type { AgentNode, Issue } from "../lib/types";
@@ -10,6 +10,8 @@ export type LiveState = "active" | "visited";
 export type AgentNodeData = {
   node: AgentNode;
   isStart: boolean;
+  /** Where the call goes when it gets stuck (AD-16). */
+  isFallback?: boolean;
   issues: Issue[];
   selectedEdge: number | null;
   live?: LiveState;
@@ -20,7 +22,7 @@ export type AgentNodeData = {
 export type AgentFlowNode = Node<AgentNodeData, "agent">;
 
 export default function AgentNodeCard({ data, selected }: NodeProps<AgentFlowNode>) {
-  const { node, isStart, issues, selectedEdge, live, change } = data;
+  const { node, isStart, isFallback, issues, selectedEdge, live, change } = data;
   const select = useEditor((s) => s.select);
   const nodeIssues = issues.filter((i) => i.edge === undefined);
   const errors = issues.filter((i) => i.severity === "error").length;
@@ -62,6 +64,11 @@ export default function AgentNodeCard({ data, selected }: NodeProps<AgentFlowNod
         {change && (
           <Badge className="bg-violet-100 text-violet-700">
             <Sparkles size={10} /> {change === "added" ? "New" : change === "changed" ? "Changed" : "Removed"}
+          </Badge>
+        )}
+        {isFallback && (
+          <Badge className="bg-amber-100 text-amber-800">
+            <LifeBuoy size={10} /> Fallback
           </Badge>
         )}
         {isStart && (

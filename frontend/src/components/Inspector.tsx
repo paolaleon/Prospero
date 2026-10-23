@@ -96,6 +96,26 @@ function AgentSettings({ agent }: { agent: Agent }) {
         </div>
         <LanguagesPicker agent={agent} />
         <div>
+          <Label hint="After 2 failures in a row in a node">When the call gets stuck</Label>
+          <Select
+            value={agent.fallback_node ?? ""}
+            onChange={(e) =>
+              dispatch({ type: "updateAgent", patch: { fallback_node: e.target.value || null } })
+            }
+          >
+            <option value="">End the call politely (built-in)</option>
+            {agent.nodes.map((n) => (
+              <option key={n.name} value={n.name}>
+                Go to {n.name}
+              </option>
+            ))}
+          </Select>
+          <p className="mt-1 text-xs text-slate-500">
+            A caller who can't give what a step needs, or keeps speaking another language, isn't left stuck: the
+            call moves on here instead of asking again.
+          </p>
+        </div>
+        <div>
           <Label>LLM (OpenAI)</Label>
           <TextInput
             list="models"

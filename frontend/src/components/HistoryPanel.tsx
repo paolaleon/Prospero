@@ -53,7 +53,13 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
                 <PhoneIncoming size={14} className="shrink-0 text-slate-400" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm">
-                    Ended at <span className="font-mono">{c.final_node}</span>
+                    {c.final_node === "built_in_fallback" ? (
+                      "Polite ending (stuck)"
+                    ) : (
+                      <>
+                        Ended at <span className="font-mono">{c.final_node}</span>
+                      </>
+                    )}
                   </span>
                   <span className="block text-xs text-slate-500">
                     {timeAgo(c.started_at)} · {c.turns} turns ·{" "}

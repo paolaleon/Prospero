@@ -79,6 +79,7 @@ function FlowCanvas({ live }: { live?: LiveView }) {
           data: {
             node,
             isStart: agent.initial_node === node.name,
+            isFallback: agent.fallback_node === node.name,
             issues: issues.filter((x) => x.node === node.name),
             selectedEdge: selection?.kind === "edge" && selection.node === node.name ? selection.index : null,
             live: liveState,

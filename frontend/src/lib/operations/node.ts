@@ -38,6 +38,7 @@ export const nodeOps: OpDefs<NodeOp> = {
       return {
         ...renamed,
         initial_node: agent.initial_node === op.from ? op.to : agent.initial_node,
+        ...(agent.fallback_node === op.from ? { fallback_node: op.to } : {}),
         nodes: renamed.nodes.map((n) =>
           n.edges ? { ...n, edges: n.edges.map((e) => (e.target === op.from ? { ...e, target: op.to } : e)) } : n,
         ),
@@ -50,10 +51,13 @@ export const nodeOps: OpDefs<NodeOp> = {
     required: ["node"],
     apply: (agent, op) => {
       findNode(agent, op.node);
+      // Deleting the fallback node returns stuck calls to the built-in ending.
+      const { fallback_node, ...rest } = agent;
       // Transitions into the deleted node keep their configuration but lose their
       // target, so validation points at each one instead of it silently vanishing.
       return {
-        ...agent,
+        ...rest,
+        ...(fallback_node !== undefined && fallback_node !== op.node ? { fallback_node } : {}),
         initial_node: agent.initial_node === op.node ? "" : agent.initial_node,
         nodes: agent.nodes
           .filter((n) => n.name !== op.node)

@@ -47,6 +47,8 @@ export interface Agent {
   model?: string;
   /** ISO 639-1 codes, default first; English only when absent (AD-15). */
   languages?: string[];
+  /** Node a stuck call is moved to; absent or null: a built-in polite ending (AD-16). */
+  fallback_node?: string | null;
 }
 
 export interface Issue {
@@ -103,6 +105,14 @@ export type CallEvent =
       action: "locked" | "blocked";
       language: string | null;
       text: string;
+    }
+  | {
+      // The call got stuck in a node and was moved to its fallback (AD-16).
+      t: string;
+      type: "fallback";
+      from_node: string;
+      reason: "missing information" | "language";
+      to_node: string;
     }
   | {
       // The LLM tried a transition without the data it requires; the call stayed put.
