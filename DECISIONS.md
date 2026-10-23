@@ -28,6 +28,7 @@ This file records the project's architectural decisions (ADs): decisions that ar
 | AD-14 | ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step |
 | AD-15 | Every agent speaks English only, fixed in speech recognition, the voice and every node |
 | AD-16 | A call stuck in a node for two failures in a row is moved to a fallback by the runtime |
+| AD-17 | Every node gets a "no medical advice" rule from the runtime, whatever the persona says |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -321,7 +322,7 @@ If a check fails, the transition is **refused**:
 
 The domain shows up in what ProsperO does by default when it builds an agent:
 - **Identity before details:** verify the caller (e.g. full name and date of birth) before discussing an existing appointment or record.
-- **No medical advice:** the agent never diagnoses or advises on treatment; it offers to book or to pass the question to staff.
+- **No medical advice:** the agent never diagnoses or advises on treatment; it offers to book or to pass the question to staff. The runtime now adds this to every node of every agent (AD-17).
 - **Emergencies first:** an urgent or emergency path that tells the caller to hang up and call emergency services, or transfers them, reachable from the start of the call.
 - **Collect only what's needed:** each piece of patient data must serve the call's purpose, in line with handling protected health information (PHI) carefully.
 - **Spoken, plain language:** short replies, one question at a time, confirmation of key details (date, time, name) before ending.
@@ -528,6 +529,39 @@ Each fallback is a `fallback` event in the call record (from which node, why, to
 - *"A call can still stall without refusals,"* for example if the LLM keeps chatting and never calls a transition. That's a different failure, not counted here (gap 3).
 
 **Revisit when** a phone system allows real transfers, or real calls show misdetections reaching the fallback too often.
+
+---
+
+## AD-17: Every node gets a "no medical advice" rule from the runtime, whatever the persona says
+
+**Decision.** The builder adds a fixed medical safety rule to the role message of **every node** (`backend/agent_builder/medical.py`, applied in `AgentBuilder._role_message`). It goes after the persona, or after a node's own persona override, and before the English rule (AD-15). The built-in fallback gets it too. The rule: never diagnose, interpret symptoms, or suggest treatments, remedies, home care or medications (including over-the-counter ones and doses), even if the caller insists. If asked, say you can't give medical advice and offer to book or pass the question to staff. If it sounds urgent, tell the caller to hang up and call emergency services. It can't be turned off per agent.
+
+ProsperO's prompt no longer asks the persona to say it; it only tells ProsperO not to write anything that contradicts it.
+
+**Product argument.**
+- **The product is medical voice agents (AD-11), so this is the product's floor, not an agent setting.** A clinic that builds an agent by hand, or edits ProsperO's persona, can't end up with one that gives health advice.
+- **It came from a real call.** A hand-made agent with a generic persona told a caller with a toothache to rinse with salt water and take painkillers. The medical defaults lived only in personas ProsperO wrote, so any other agent had none.
+- **Clinics own fewer risks.** Advice on a phone line is a liability for the clinic; "I can't advise, let me book you in" is also a conversion to an appointment.
+
+**AI angle.**
+- **Defaults that live in generated text are suggestions; defaults in the runtime are guarantees of presence.** The rule is always in the context, on every node, independent of who wrote the agent.
+- **It's still a prompt.** It strongly lowers the chance of advice; it doesn't make it impossible. A deterministic check on what the agent says (a filter before the voice) would be the backstop; see the alternatives.
+- **Placement matters:** after the persona, so it's read as an overriding rule rather than buried in it, and on every node, because Flows replaces the role message on each transition.
+
+**Alternatives considered.**
+- **Keep it in ProsperO's personas only.** Rejected: that's what failed. Hand-made and edited agents lose it.
+- **A per-agent toggle.** Rejected for now: no agent in scope (scheduling, intake, reminders) needs to advise. A triage product would need clinical review first, not a checkbox.
+- **An output filter between the LLM and the voice** (patterns such as doses or drug names). Deferred: it's brittle on paraphrases, adds latency to every reply, and false positives cut off legitimate sentences. Worth adding if recorded calls show the prompt rule isn't enough.
+- **A validation rule that requires the persona to mention it.** Rejected: checking wording is fragile, and it puts the burden on every author instead of the runtime.
+
+**Cost of reversal.** Low. It's one constant and one line in the builder.
+
+**Likely challenges.**
+- *"A prompt can still be jailbroken."* Yes. This is the first layer; it fixes the common case (an agent that was never told). Recorded calls and a future output check are the next layers.
+- *"Some clinics want to share opening hours, prep instructions, or 'bring your insurance card'."* That's not medical advice, and the rule doesn't forbid it. Pre-visit instructions a clinic writes in a node are its own content, not the agent's judgement.
+- *"Why not let the LLM decide what counts as advice?"* It does, inside the rule. The runtime only guarantees the rule is there.
+
+**Revisit when** recorded calls show advice getting through (add the output check), or the product covers triage.
 
 ---
 
