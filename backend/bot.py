@@ -52,7 +52,7 @@ from pipecat_flows import FlowManager
 import api
 import store
 from agent_builder import AgentBuilder
-from agent_builder.builder import BUILT_IN_FALLBACK
+from call_record import CallRecorder
 
 # Load .env next to this file, so the bot runs the same from the repo root or backend/.
 load_dotenv(Path(__file__).parent / ".env", override=True)
@@ -65,57 +65,6 @@ AGENT_FLOW = Path(__file__).parent / "example_flow.json"
 transport_params = {
     "webrtc": lambda: TransportParams(audio_in_enabled=True, audio_out_enabled=True),
 }
-
-
-class CallRecorder:
-    """Collects one call's timeline and writes it to the store when the call ends."""
-
-    def __init__(self, agent: dict, agent_id, version, source: str):
-        self.record = {
-            "id": store.new_call_id(),
-            "source": source,
-            "agent_id": agent_id,
-            "agent_version": version,
-            "agent": agent,
-            "started_at": store.now(),
-            "ended_at": None,
-            "ended_by": None,
-            "final_node": agent["initial_node"],
-            "collected": {},
-            "events": [],
-        }
-
-    @property
-    def call_id(self) -> str:
-        return self.record["id"]
-
-    def add(self, type: str, **fields) -> dict:
-        event = {"t": store.now(), "type": type, **fields}
-        self.record["events"].append(event)
-        return event
-
-    def transition(self, from_node: str, function: str, to_node: str, args: dict) -> dict:
-        self.record["final_node"] = to_node
-        self.record["collected"].update(args)
-        return self.add("transition", from_node=from_node, function=function, to_node=to_node, args=args)
-
-    def fallback(self, from_node: str, reason: str, to_node: str) -> dict:
-        # The call got stuck and was moved on (AD-16): that's where it now is.
-        self.record["final_node"] = to_node
-        return self.add("fallback", from_node=from_node, reason=reason, to_node=to_node)
-
-    def refusal(self, node: str, function: str, args: dict, problems: list) -> dict:
-        # A transition the LLM tried without the data it requires. Repeated
-        # refusals in one node are a sign its instructions need work.
-        return self.add("refused", node=node, function=function, args=args, problems=problems)
-
-    def save(self) -> None:
-        # The built-in fallback ends the call too.
-        end_nodes = {n["name"] for n in self.record["agent"]["nodes"] if n.get("end")} | {BUILT_IN_FALLBACK}
-        self.record["ended_at"] = store.now()
-        self.record["ended_by"] = "agent" if self.record["final_node"] in end_nodes else "caller"
-        store.save_call(self.record)
-        logger.info(f"Recorded call {self.call_id} ({len(self.record['events'])} events)")
 
 
 def user_turn_strategies() -> UserTurnStrategies:
