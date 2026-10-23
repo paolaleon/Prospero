@@ -45,6 +45,8 @@ export interface Agent {
   persona?: string;
   voice_id?: string;
   model?: string;
+  /** Node a stuck call is moved to; absent or null: a built-in polite ending (AD-16). */
+  fallback_node?: string | null;
 }
 
 export interface Issue {
@@ -94,6 +96,23 @@ export type CallEvent =
       args: Record<string, unknown>;
     }
   | {
+      // Only in calls recorded while a language guard existed (since removed, AD-15):
+      // the call locked to a language, or the caller's words in another weren't passed on.
+      t: string;
+      type: "language";
+      action: "locked" | "blocked";
+      language: string | null;
+      text: string;
+    }
+  | {
+      // The call got stuck in a node and was moved to its fallback (AD-16).
+      t: string;
+      type: "fallback";
+      from_node: string;
+      reason: "missing information" | "language"; // "language": older calls only
+      to_node: string;
+    }
+  | {
       // The LLM tried a transition without the data it requires; the call stayed put.
       t: string;
       type: "refused";
@@ -120,6 +139,48 @@ export interface CallRecord extends Omit<CallSummary, "turns" | "agent_name"> {
   agent: Agent;
   collected: Record<string, unknown>;
   events: CallEvent[];
+}
+
+// Regression tests: a recorded call's caller turns, replayed against the agent
+// (backend/regression/, AD-18).
+export interface TestExpect {
+  final_node: string | null;
+  collected: string[];
+  checks: string[];
+}
+
+export interface RegressionTest {
+  id: string;
+  name: string;
+  created_at: string;
+  from_call: string | null;
+  caller_turns: string[];
+  expect: TestExpect;
+  last_run: { at: string; agent_version: number | null; passed: number; total: number } | null;
+}
+
+export interface TestCheckResult {
+  kind: "final_node" | "collected" | "check";
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface TestRun {
+  passed: boolean;
+  error: string | null;
+  final_node?: string;
+  unused_turns?: number;
+  events: CallEvent[];
+  results: TestCheckResult[];
+}
+
+export interface TestRunResult {
+  at: string;
+  agent_version: number | null;
+  passed: number;
+  total: number;
+  runs: TestRun[];
 }
 
 export interface Voice {

@@ -5,9 +5,12 @@ import Transcript from "./Transcript";
 
 export default function TestCallPanel({ onOpenCall }: { onOpenCall: (id: string) => void }) {
   const draft = useEditor((s) => s.draft)!;
+  // While reviewing a ProsperO proposal, calls run the proposal: test before accepting.
+  const proposal = useEditor((s) => s.proposal);
   const agentId = useEditor((s) => s.agentId);
   const version = useEditor((s) => s.version);
-  const issues = useEditor((s) => s.issues);
+  const draftIssues = useEditor((s) => s.issues);
+  const issues = proposal?.issues ?? draftIssues;
   const dirty = useEditor(isDirty);
   const { status, events, error, callId, userSpeaking, botSpeaking, start, hangUp, reset } = useCall();
 
@@ -20,8 +23,10 @@ export default function TestCallPanel({ onOpenCall }: { onOpenCall: (id: string)
         {!inCall ? (
           <>
             <button
-              onClick={() => start(draft, agentId, dirty ? null : version)}
-              disabled={errors > 0}
+              onClick={() =>
+                proposal ? start(proposal.agent, agentId, null) : start(draft, agentId, dirty ? null : version)
+              }
+              disabled={errors > 0 || proposal?.status === "building"}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-500"
             >
               <Phone size={16} /> {status === "ended" ? "Call again" : "Start test call"}
@@ -29,7 +34,9 @@ export default function TestCallPanel({ onOpenCall }: { onOpenCall: (id: string)
             <p className="text-xs text-slate-500">
               {errors > 0
                 ? `Fix ${errors} error${errors > 1 ? "s" : ""} first; an agent with errors can't run.`
-                : dirty
+                : proposal
+                  ? "Runs ProsperO's proposal before you accept it. Talk through your microphone."
+                  : dirty
                   ? `Runs your unsaved draft (based on version ${version}). Talk through your microphone.`
                   : `Runs version ${version}. Talk through your microphone.`}
             </p>

@@ -2,6 +2,7 @@
 # Store — agents (as immutable versions) and call records, as JSON files.
 #
 #   agents/{agent_id}/versions/0001.json   {"version", "created_at", "message", "source", "agent"}
+#   agents/{agent_id}/tests/{test_id}.json  a regression test (see save_test)
 #   calls/{call_id}.json                   one record per call (see save_call)
 #
 # A save never overwrites: it appends a version. That gives rollback, and lets a
@@ -133,9 +134,11 @@ def create_agent(agent: dict, message: str = "Created") -> tuple[str, dict]:
 
 def delete_agent(agent_id: str) -> None:
     latest_version(agent_id)  # raises NotFound
-    for p in _versions_dir(agent_id).glob("*"):
-        p.unlink()
-    _versions_dir(agent_id).rmdir()
+    for d in (_versions_dir(agent_id), _tests_dir(agent_id)):
+        if d.exists():
+            for p in d.glob("*"):
+                p.unlink()
+            d.rmdir()
     (AGENTS_DIR / agent_id).rmdir()
 
 
@@ -154,6 +157,52 @@ def list_agents() -> list[dict]:
             "updated_at": record["created_at"],
         })
     return sorted(out, key=lambda a: a["updated_at"], reverse=True)
+
+
+# ---- regression tests -----------------------------------------------------------
+# Tests belong to the agent, not to a version: they're what every version (and
+# every draft) should keep passing.
+def _tests_dir(agent_id: str) -> Path:
+    return AGENTS_DIR / _check_id(agent_id) / "tests"
+
+
+def new_test_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def save_test(agent_id: str, test: dict) -> dict:
+    """Create or replace one test.
+
+    {
+      "id", "name", "created_at", "from_call" (the call it was made from, or None),
+      "caller_turns": ["what the caller says, in order", ...],
+      "expect": {"final_node": str | None, "collected": [field, ...], "checks": [str, ...]},
+      "last_run": {"at", "agent_version", "passed", "runs"} | None
+    }
+    """
+    latest_version(agent_id)  # only existing agents have tests
+    _write_json(_tests_dir(agent_id) / f"{_check_id(test['id'])}.json", test)
+    return test
+
+
+def get_test(agent_id: str, test_id: str) -> dict:
+    path = _tests_dir(agent_id) / f"{_check_id(test_id)}.json"
+    if not path.exists():
+        raise NotFound(f"Test '{test_id}' not found.")
+    return json.loads(path.read_text())
+
+
+def list_tests(agent_id: str) -> list[dict]:
+    """An agent's tests, oldest first, so the list stays in the order they were made."""
+    latest_version(agent_id)
+    d = _tests_dir(agent_id)
+    tests = [json.loads(p.read_text()) for p in d.glob("*.json")] if d.exists() else []
+    return sorted(tests, key=lambda t: t.get("created_at") or "")
+
+
+def delete_test(agent_id: str, test_id: str) -> None:
+    get_test(agent_id, test_id)  # raises NotFound
+    (_tests_dir(agent_id) / f"{test_id}.json").unlink()
 
 
 # ---- which agent a call runs ---------------------------------------------------
@@ -192,6 +241,7 @@ def save_call(record: dict) -> None:
         {"t", "type": "user", "text"},
         {"t", "type": "agent", "text", "interrupted"},
         {"t", "type": "refused", "node", "function", "args", "problems"},
+        {"t", "type": "fallback", "from_node", "reason", "to_node"},
       ]
     }
     """

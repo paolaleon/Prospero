@@ -44,12 +44,15 @@ from pipecat.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.turns.user_start import TranscriptionUserTurnStartStrategy, VADUserTurnStartStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 from pipecat_flows import FlowManager
 
 import api
 import store
 from agent_builder import AgentBuilder
+from call_record import CallRecorder
 
 # Load .env next to this file, so the bot runs the same from the repo root or backend/.
 load_dotenv(Path(__file__).parent / ".env", override=True)
@@ -64,49 +67,18 @@ transport_params = {
 }
 
 
-class CallRecorder:
-    """Collects one call's timeline and writes it to the store when the call ends."""
+def user_turn_strategies() -> UserTurnStrategies:
+    """When the caller counts as having started speaking (which interrupts the bot).
 
-    def __init__(self, agent: dict, agent_id, version, source: str):
-        self.record = {
-            "id": store.new_call_id(),
-            "source": source,
-            "agent_id": agent_id,
-            "agent_version": version,
-            "agent": agent,
-            "started_at": store.now(),
-            "ended_at": None,
-            "ended_by": None,
-            "final_node": agent["initial_node"],
-            "collected": {},
-            "events": [],
-        }
-
-    @property
-    def call_id(self) -> str:
-        return self.record["id"]
-
-    def add(self, type: str, **fields) -> dict:
-        event = {"t": store.now(), "type": type, **fields}
-        self.record["events"].append(event)
-        return event
-
-    def transition(self, from_node: str, function: str, to_node: str, args: dict) -> dict:
-        self.record["final_node"] = to_node
-        self.record["collected"].update(args)
-        return self.add("transition", from_node=from_node, function=function, to_node=to_node, args=args)
-
-    def refusal(self, node: str, function: str, args: dict, problems: list) -> dict:
-        # A transition the LLM tried without the data it requires. Repeated
-        # refusals in one node are a sign its instructions need work.
-        return self.add("refused", node=node, function=function, args=args, problems=problems)
-
-    def save(self) -> None:
-        end_nodes = {n["name"] for n in self.record["agent"]["nodes"] if n.get("end")}
-        self.record["ended_at"] = store.now()
-        self.record["ended_by"] = "agent" if self.record["final_node"] in end_nodes else "caller"
-        store.save_call(self.record)
-        logger.info(f"Recorded call {self.call_id} ({len(self.record['events'])} events)")
+    Pipecat's default also treats any *partial* transcript as the caller starting
+    to speak. Speech-to-text can send a stray partial a moment after a sentence is
+    final; after a transition, that's just when the new node's reply is ready, so
+    the reply was interrupted and lost. Voice detection still catches real
+    barge-in, and final transcripts still count for speech it misses.
+    """
+    return UserTurnStrategies(
+        start=[VADUserTurnStartStrategy(), TranscriptionUserTurnStartStrategy(use_interim=False)]
+    )
 
 
 async def run_bot(
@@ -118,10 +90,14 @@ async def run_bot(
     config = builder.config
     logger.info(f"Starting '{config.name}' with {len(config.nodes)} nodes (call {recorder.call_id})")
 
-    stt = ElevenLabsRealtimeSTTService(api_key=os.environ["ELEVENLABS_API_KEY"])
+    # Every agent speaks English (AD-15): speech in and out is fixed to it.
+    stt = ElevenLabsRealtimeSTTService(
+        api_key=os.environ["ELEVENLABS_API_KEY"],
+        settings=ElevenLabsRealtimeSTTService.Settings(language="en"),
+    )
     tts = ElevenLabsTTSService(
         api_key=os.environ["ELEVENLABS_API_KEY"],
-        settings=ElevenLabsTTSService.Settings(voice=config.voice_id),
+        settings=ElevenLabsTTSService.Settings(voice=config.voice_id, language="en"),
     )
     llm = OpenAILLMService(api_key=os.environ["OPENAI_API_KEY"], model=config.model)
 
@@ -140,13 +116,20 @@ async def run_bot(
     async def on_transition_refused(node: str, function: str, args: dict, problems: list) -> None:
         await notify_event(recorder.refusal(node, function, args, problems))
 
+    async def on_fallback(from_node: str, reason: str, to_node: str) -> None:
+        await notify_event(recorder.fallback(from_node, reason, to_node))
+        await notify_node(to_node, from_node=from_node, function="fallback", args={})
+
     builder.on_transition = on_transition
+    builder.on_fallback = on_fallback
     builder.on_transition_refused = on_transition_refused
 
     context = LLMContext()
     context_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(), user_turn_strategies=user_turn_strategies()
+        ),
     )
 
     pipeline = Pipeline(

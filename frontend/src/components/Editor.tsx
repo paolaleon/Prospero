@@ -1,21 +1,28 @@
-import { ArrowLeft, CircleAlert, Redo2, Save, Sparkles, Undo2, X, AlertTriangle } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, CircleAlert, Loader2, Redo2, Save, Sparkles, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../lib/api";
 import { pathOf, useCall } from "../lib/call";
+import { changeCount, diffAgents } from "../lib/diff";
 import { navigate } from "../lib/router";
 import { isDirty, useEditor } from "../lib/store";
 import type { CallRecord } from "../lib/types";
+import { useCopilot } from "../lib/copilot";
 import Canvas from "./Canvas";
+import CopilotPanel, { pendingPromptKey } from "./CopilotPanel";
 import RightPanel, { type Tab } from "./RightPanel";
 
 export default function Editor({ agentId }: { agentId: string }) {
   const load = useEditor((s) => s.load);
   const draft = useEditor((s) => s.draft);
+  // The store can still hold the previously opened agent for a render; wait for
+  // this one, or panels would act on the wrong agent.
+  const ready = useEditor((s) => s.agentId === agentId && s.draft !== null && !s.loading);
   const loading = useEditor((s) => s.loading);
   const error = useEditor((s) => s.error);
   const dirty = useEditor(isDirty);
 
   useEffect(() => {
+    useCopilot.getState().reset(); // each agent has its own conversation
     load(agentId);
   }, [agentId, load]);
 
@@ -63,7 +70,7 @@ export default function Editor({ agentId }: { agentId: string }) {
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  if (!draft) {
+  if (!ready || !draft) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-slate-500">
         {loading ? "Loading agent…" : error ?? "Agent not found."}
@@ -75,8 +82,9 @@ export default function Editor({ agentId }: { agentId: string }) {
     <div className="flex h-full flex-col">
       <TopBar />
       <ErrorBanner />
+      <ProposalBar />
       <div className="flex min-h-0 flex-1">
-        <CopilotPanel />
+        <Copilot />
         <main className="relative min-w-0 flex-1">
           <Canvas live={overlay} />
         </main>
@@ -91,7 +99,9 @@ export default function Editor({ agentId }: { agentId: string }) {
 function TopBar() {
   const draft = useEditor((s) => s.draft)!;
   const version = useEditor((s) => s.version);
-  const issues = useEditor((s) => s.issues);
+  // While reviewing, count the proposal's issues: that's what's on the canvas.
+  const issues = useEditor((s) => s.proposal?.issues ?? s.issues);
+  const reviewing = useEditor((s) => s.proposal !== null);
   const past = useEditor((s) => s.past);
   const future = useEditor((s) => s.future);
   const undo = useEditor((s) => s.undo);
@@ -133,10 +143,10 @@ function TopBar() {
       </div>
 
       <div className="ml-auto flex items-center gap-1">
-        <IconButton onClick={undo} disabled={!past.length} title={past.length ? `Undo: ${past.at(-1)!.label} (⌘Z)` : "Undo"}>
+        <IconButton onClick={undo} disabled={reviewing || !past.length} title={past.length ? `Undo: ${past.at(-1)!.label} (⌘Z)` : "Undo"}>
           <Undo2 size={16} />
         </IconButton>
-        <IconButton onClick={redo} disabled={!future.length} title={future.length ? `Redo: ${future[0].label} (⇧⌘Z)` : "Redo"}>
+        <IconButton onClick={redo} disabled={reviewing || !future.length} title={future.length ? `Redo: ${future[0].label} (⇧⌘Z)` : "Redo"}>
           <Redo2 size={16} />
         </IconButton>
         <SaveButton />
@@ -204,6 +214,76 @@ function SaveButton() {
   );
 }
 
+/** ProsperO's proposal: progress while it builds, then Accept or Reject. */
+function ProposalBar() {
+  const proposal = useEditor((s) => s.proposal);
+  const accept = useEditor((s) => s.acceptProposal);
+  const reject = useEditor((s) => s.rejectProposal);
+  const saving = useEditor((s) => s.saving);
+  const changes = useMemo(() => (proposal ? changeCount(diffAgents(proposal.base, proposal.agent)) : 0), [proposal]);
+  const [showAssumptions, setShowAssumptions] = useState(false);
+  if (!proposal) return null;
+
+  const { status, edits, summary, assumptions = [], error } = proposal;
+  return (
+    <div className="border-b border-violet-200 bg-violet-50 px-4 py-2 text-sm text-violet-900">
+      <div className="flex items-center gap-3">
+        {status === "building" ? (
+          <Loader2 size={16} className="shrink-0 animate-spin text-violet-600" />
+        ) : (
+          <Sparkles size={16} className="shrink-0 text-violet-600" />
+        )}
+        <div className="min-w-0 flex-1">
+          {status === "building" && (
+            <span>
+              ProsperO is building… <span className="text-violet-600">{edits.length} edits so far</span>
+            </span>
+          )}
+          {status === "ready" && (
+            <span>
+              <span className="font-medium">ProsperO's proposal:</span> {summary}{" "}
+              <span className="text-violet-600">({changes} changes)</span>
+            </span>
+          )}
+          {status === "question" && <span>ProsperO has a question for you in the Copilot panel.</span>}
+          {status === "error" && <span className="text-red-700">{error ?? "ProsperO couldn't finish."}</span>}
+        </div>
+        {assumptions.length > 0 && (
+          <button onClick={() => setShowAssumptions((s) => !s)} className="shrink-0 text-xs text-violet-700 hover:underline">
+            {showAssumptions ? "Hide" : "Show"} {assumptions.length} assumption{assumptions.length > 1 && "s"}
+          </button>
+        )}
+        <button
+          onClick={() => {
+            reject();
+            useCopilot.getState().recordOutcome("rejected");
+          }}
+          disabled={status === "building"}
+          className="flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-40"
+        >
+          <X size={14} /> Reject
+        </button>
+        <button
+          onClick={async () => {
+            if (await accept()) useCopilot.getState().recordOutcome("accepted");
+          }}
+          disabled={status !== "ready" || saving}
+          className="flex shrink-0 items-center gap-1 rounded-md bg-violet-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-violet-700 disabled:opacity-40"
+        >
+          <Check size={14} /> {saving ? "Saving…" : "Accept & save"}
+        </button>
+      </div>
+      {showAssumptions && (
+        <ul className="mt-2 list-inside list-disc space-y-0.5 pl-7 text-xs text-violet-800">
+          {assumptions.map((a) => (
+            <li key={a}>{a}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ErrorBanner() {
   const error = useEditor((s) => s.error);
   const clearError = useEditor((s) => s.clearError);
@@ -218,34 +298,30 @@ function ErrorBanner() {
   );
 }
 
-/** Reserved for the Phase 2 copilot. */
-function CopilotPanel() {
-  const [open, setOpen] = useState(false);
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        title="Copilot"
-        className="flex w-11 shrink-0 flex-col items-center gap-2 border-r border-slate-200 bg-white pt-3 text-slate-400 hover:text-indigo-600"
-      >
-        <Sparkles size={18} />
-        <span className="text-[10px] font-medium [writing-mode:vertical-rl]">Copilot</span>
-      </button>
-    );
-  }
+/** ProsperO: a collapsed rail, or the chat panel. Opens by itself for an empty
+ *  agent or a description sent from the agent list. */
+function Copilot() {
+  const agentId = useEditor((s) => s.agentId);
+  const empty = useEditor((s) => (s.draft?.nodes.length ?? 0) === 0);
+  const [open, setOpen] = useState(() => {
+    try {
+      if (agentId && sessionStorage.getItem(pendingPromptKey(agentId))) return true;
+    } catch {
+      // ignore unavailable storage
+    }
+    return empty;
+  });
+
+  if (open) return <CopilotPanel onClose={() => setOpen(false)} />;
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-r border-slate-200 bg-white">
-      <div className="flex items-center gap-2 border-b border-slate-200 px-3 py-2.5">
-        <Sparkles size={16} className="text-indigo-600" />
-        <span className="flex-1 text-sm font-semibold">Copilot</span>
-        <button onClick={() => setOpen(false)} className="rounded p-1 text-slate-400 hover:bg-slate-100">
-          <X size={14} />
-        </button>
-      </div>
-      <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-slate-400">
-        Build and improve this agent from instructions and call data. Coming in Phase 2.
-      </div>
-    </aside>
+    <button
+      onClick={() => setOpen(true)}
+      title="ProsperO"
+      className="flex w-11 shrink-0 flex-col items-center gap-2 border-r border-slate-200 bg-white pt-3 text-slate-400 hover:text-violet-600"
+    >
+      <Sparkles size={18} />
+      <span className="text-[10px] font-medium [writing-mode:vertical-rl]">ProsperO</span>
+    </button>
   );
 }
 

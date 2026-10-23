@@ -17,6 +17,8 @@ from typing import Awaitable, Callable, Optional, Union
 from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 
+from .english import ENGLISH_ONLY_RULE
+from .medical import NO_MEDICAL_ADVICE_RULE
 from .schema import AgentConfig, Edge, Node
 from .validation import validate_agent
 
@@ -28,6 +30,20 @@ TransitionHook = Callable[[str, str, str, dict], Awaitable[None]]
 # Called when the LLM tries a transition without the data it requires, so the
 # call stays where it is: (node, function, args, problems).
 RefusalHook = Callable[[str, str, dict, list], Awaitable[None]]
+
+# Called when a stuck call is moved to its fallback: (from_node, reason, to_node).
+FallbackHook = Callable[[str, str, str], Awaitable[None]]
+
+# A call whose transitions are refused this many times in a row in one node
+# goes to its fallback (AD-16).
+FAILURE_LIMIT = 2
+
+# Used when the agent has no fallback node of its own.
+BUILT_IN_FALLBACK = "built_in_fallback"
+BUILT_IN_FALLBACK_TASK = (
+    "Apologise briefly that you couldn't help with this on the call, and say the clinic's staff "
+    "can help directly. Then say goodbye. Don't ask the caller anything."
+)
 
 
 def check_args(edge: Edge, args: dict) -> list[str]:
@@ -69,6 +85,10 @@ class AgentBuilder:
         # the first transition: `builder.on_transition = my_listener`.
         self.on_transition: Optional[TransitionHook] = None
         self.on_transition_refused: Optional[RefusalHook] = None
+        self.on_fallback: Optional[FallbackHook] = None
+        # Where the call is, and how many times in a row it has failed there.
+        self.current_node: Optional[str] = None
+        self._refusals = 0
         self._nodes_by_name = {n.name: n for n in config.nodes}
 
     # ---- loading -----------------------------------------------------------
@@ -87,12 +107,47 @@ class AgentBuilder:
     # ---- compilation -------------------------------------------------------
     def build_initial_node(self) -> NodeConfig:
         """Return the entry NodeConfig; downstream nodes are built lazily on transition."""
+        self._enter(self.config.initial_node)
         return self._make_node(self._nodes_by_name[self.config.initial_node])
+
+    # ---- recovering from a stuck node (AD-16) --------------------------------
+    @property
+    def fallback_name(self) -> str:
+        return self.config.fallback_node or BUILT_IN_FALLBACK
+
+    def fallback_node_config(self) -> NodeConfig:
+        """The node a stuck call goes to: the agent's own, or a polite ending."""
+        if self.config.fallback_node:
+            return self._make_node(self._nodes_by_name[self.config.fallback_node])
+        return {
+            "name": BUILT_IN_FALLBACK,
+            "role_message": self._role_message(None),
+            "task_messages": [{"role": "developer", "content": BUILT_IN_FALLBACK_TASK}],
+            "functions": [],
+            "post_actions": [{"type": "end_conversation"}],
+        }
+
+    async def take_fallback(self, reason: str) -> NodeConfig:
+        """Move the call's bookkeeping to the fallback and return its config."""
+        from_node = self.current_node or ""
+        config = self.fallback_node_config()
+        self._enter(self.fallback_name)
+        logger.info(f"[fallback] {from_node} -> {self.fallback_name} | {reason}")
+        await _notify(self.on_fallback, from_node, reason, self.fallback_name)
+        return config
+
+    def _stuck(self, count: int) -> bool:
+        # Never fall back from the fallback itself, or a stuck call would loop.
+        return count >= FAILURE_LIMIT and self.current_node != self.fallback_name
+
+    def _enter(self, name: str) -> None:
+        self.current_node = name
+        self._refusals = 0
 
     def _make_node(self, node: Node) -> NodeConfig:
         node_config: NodeConfig = {
             "name": node.name,
-            "role_message": node.role_message or self.config.persona,
+            "role_message": self._role_message(node.role_message),
             "task_messages": node.task_messages,
             "functions": [self._make_edge_function(node, edge) for edge in node.edges],
         }
@@ -105,20 +160,32 @@ class AgentBuilder:
             node_config["post_actions"] = [{"type": "end_conversation"}]
         return node_config
 
+    def _role_message(self, override: Optional[str]) -> str:
+        # The medical safety and English rules are added to every node, so no
+        # persona, written by hand or overridden per node, can drop them
+        # (AD-17, AD-15).
+        return f"{override or self.config.persona}\n\n{NO_MEDICAL_ADVICE_RULE}\n\n{ENGLISH_ONLY_RULE}".strip()
+
     def _make_edge_function(self, node: Node, edge: Edge) -> FlowsFunctionSchema:
         async def handler(args: dict, flow_manager: FlowManager):
             problems = check_args(edge, args)
             if problems:
-                # Stay in this node. Returning no next node makes Flows hand this
-                # result straight back to the LLM, which can ask the caller again.
                 logger.info(f"[{edge.function}] refused in {node.name}: {problems} | args: {args}")
                 await _notify(self.on_transition_refused, node.name, edge.function, args, problems)
+                self._refusals += 1
+                if self._stuck(self._refusals):
+                    # Stuck: stop asking and move the call on to its fallback.
+                    error = " ".join(problems) + " The call can't continue here, so it moves on to wrap up."
+                    return {"status": "error", "error": error}, await self.take_fallback("missing information")
+                # Stay in this node. Returning no next node makes Flows hand this
+                # result straight back to the LLM, which can ask the caller again.
                 error = " ".join(problems) + " Ask the caller for it, then call this function again."
                 return {"status": "error", "error": error}, None
 
             # Persist what the caller gave us so later nodes can use it.
             flow_manager.state.update(args)
             logger.info(f"[{edge.function}] -> {edge.target} | collected: {args}")
+            self._enter(edge.target)
             next_node = self._make_node(self._nodes_by_name[edge.target])
             await _notify(self.on_transition, node.name, edge.function, edge.target, args)
             return {"status": "success", **args}, next_node

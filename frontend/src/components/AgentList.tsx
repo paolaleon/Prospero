@@ -1,9 +1,10 @@
-import { AudioLines, Copy, Plus, Trash2 } from "lucide-react";
+import { AudioLines, Copy, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { blankAgent } from "../lib/operations";
 import { navigate } from "../lib/router";
 import type { AgentSummary } from "../lib/types";
+import { pendingPromptKey } from "./CopilotPanel";
 import { timeAgo } from "../lib/format";
 
 export default function AgentList() {
@@ -29,6 +30,24 @@ export default function AgentList() {
     });
   }
 
+  // An empty agent that ProsperO builds from the description once the editor opens.
+  function describe() {
+    setNaming({
+      title: "Describe a new agent",
+      initial: "",
+      describe: true,
+      submit: async (name, description) => {
+        const record = await api.createAgent({ name, initial_node: "", nodes: [] }, "Created for ProsperO");
+        try {
+          sessionStorage.setItem(pendingPromptKey(record.id), description!);
+        } catch {
+          // Without storage the editor opens empty; the description can be typed in the panel.
+        }
+        return record;
+      },
+    });
+  }
+
   function duplicate(source: AgentSummary) {
     setNaming({
       title: `Duplicate “${source.name}”`,
@@ -40,11 +59,11 @@ export default function AgentList() {
     });
   }
 
-  async function submitName(name: string) {
+  async function submitName(name: string, description?: string) {
     if (!naming) return;
     setBusy(true);
     try {
-      const record = await naming.submit(name);
+      const record = await naming.submit(name, description);
       navigate(`/agents/${record.id}`);
     } catch (e) {
       setError((e as Error).message);
@@ -75,13 +94,22 @@ export default function AgentList() {
             <p className="text-sm text-slate-500">Each agent is a graph of conversation steps.</p>
           </div>
         </div>
-        <button
-          onClick={create}
-          disabled={busy}
-          className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-        >
-          <Plus size={16} /> New agent
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={create}
+            disabled={busy}
+            className="flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            <Plus size={16} /> New agent
+          </button>
+          <button
+            onClick={describe}
+            disabled={busy}
+            className="flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+          >
+            <Sparkles size={16} /> Describe a new agent
+          </button>
+        </div>
       </header>
 
       {error && <p className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
@@ -125,7 +153,9 @@ export default function AgentList() {
 interface NameRequest {
   title: string;
   initial: string;
-  submit: (name: string) => Promise<{ id: string }>;
+  /** Also ask for a description for ProsperO. */
+  describe?: boolean;
+  submit: (name: string, description?: string) => Promise<{ id: string }>;
 }
 
 function NameDialog({
@@ -136,10 +166,12 @@ function NameDialog({
 }: {
   request: NameRequest;
   busy: boolean;
-  onSubmit: (name: string) => void;
+  onSubmit: (name: string, description?: string) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(request.initial);
+  const [description, setDescription] = useState("");
+  const complete = name.trim() && (!request.describe || description.trim());
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     input.current?.select();
@@ -151,7 +183,7 @@ function NameDialog({
         onMouseDown={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
-          if (name.trim()) onSubmit(name.trim());
+          if (complete) onSubmit(name.trim(), request.describe ? description.trim() : undefined);
         }}
         className="w-96 rounded-xl bg-white p-5 shadow-xl"
       >
@@ -166,13 +198,27 @@ function NameDialog({
           className="w-full rounded-md border border-slate-300 px-2.5 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
         />
         <p className="mt-1.5 text-xs text-slate-500">You can rename it any time; its link stays the same.</p>
+        {request.describe && (
+          <>
+            <label className="mb-1 mt-3 block text-xs font-medium text-slate-600">What should it do?</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && onCancel()}
+              rows={5}
+              placeholder="e.g. Book cleanings and checkups for our dental clinic. Ask new patients for their insurance. Existing patients can cancel."
+              className="w-full resize-none rounded-md border border-slate-300 px-2.5 py-2 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20"
+            />
+            <p className="mt-1 text-xs text-slate-500">ProsperO will draw the agent for you to review.</p>
+          </>
+        )}
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" onClick={onCancel} className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">
             Cancel
           </button>
           <button
             type="submit"
-            disabled={!name.trim() || busy}
+            disabled={!complete || busy}
             className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
           >
             {busy ? "Creating…" : "Create"}

@@ -1,0 +1,593 @@
+{
+  "about": "Shared test cases for agent operations. Both backend/tests/test_operations.py and frontend/src/lib/operations/operations.test.ts run every case, so the Python and TypeScript implementations must agree. 'expect' maps a path (dot-separated, numbers index arrays) to the value it must have after the operation; {\"$absent\": true} means the key or index must not exist. 'same': true means the result equals the input. 'error' is the exact message the operation must fail with. Every case also checks that the input agent is left unchanged.",
+  "fixtures": {
+    "clinic": {
+      "name": "Clinic",
+      "initial_node": "greeting",
+      "persona": "Be kind.",
+      "nodes": [
+        {
+          "name": "greeting",
+          "task_messages": [
+            {
+              "role": "developer",
+              "content": "Greet."
+            }
+          ],
+          "edges": [
+            {
+              "function": "book",
+              "description": "Wants to book.",
+              "target": "booking",
+              "properties": {},
+              "required": []
+            },
+            {
+              "function": "bye",
+              "description": "Done.",
+              "target": "goodbye"
+            }
+          ],
+          "position": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "name": "booking",
+          "task_messages": [
+            {
+              "role": "developer",
+              "content": "Book."
+            }
+          ],
+          "edges": [
+            {
+              "function": "done",
+              "description": "Booked.",
+              "target": "goodbye"
+            }
+          ]
+        },
+        {
+          "name": "goodbye",
+          "task_messages": [
+            {
+              "role": "developer",
+              "content": "Bye."
+            }
+          ],
+          "end": true
+        }
+      ]
+    },
+    "clinic_with_fallback": {
+      "name": "Clinic",
+      "initial_node": "greeting",
+      "persona": "Be kind.",
+      "nodes": [
+        {
+          "name": "greeting",
+          "task_messages": [
+            {
+              "role": "developer",
+              "content": "Greet."
+            }
+          ],
+          "edges": [
+            {
+              "function": "book",
+              "description": "Wants to book.",
+              "target": "booking",
+              "properties": {},
+              "required": []
+            },
+            {
+              "function": "bye",
+              "description": "Done.",
+              "target": "goodbye"
+            }
+          ],
+          "position": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "name": "booking",
+          "task_messages": [
+            {
+              "role": "developer",
+              "content": "Book."
+            }
+          ],
+          "edges": [
+            {
+              "function": "done",
+              "description": "Booked.",
+              "target": "goodbye"
+            }
+          ]
+        },
+        {
+          "name": "goodbye",
+          "task_messages": [
+            {
+              "role": "developer",
+              "content": "Bye."
+            }
+          ],
+          "end": true
+        }
+      ],
+      "fallback_node": "goodbye"
+    }
+  },
+  "cases": [
+    {
+      "name": "updateAgent changes the given fields",
+      "agent": "clinic",
+      "op": {
+        "type": "updateAgent",
+        "patch": {
+          "name": "Dental",
+          "model": "gpt-4o-mini"
+        }
+      },
+      "label": "Edited agent name, model",
+      "expect": {
+        "name": "Dental",
+        "model": "gpt-4o-mini",
+        "persona": "Be kind."
+      }
+    },
+    {
+      "name": "setInitialNode moves the start",
+      "agent": "clinic",
+      "op": {
+        "type": "setInitialNode",
+        "node": "booking"
+      },
+      "label": "Set start node to 'booking'",
+      "expect": {
+        "initial_node": "booking"
+      }
+    },
+    {
+      "name": "setInitialNode refuses an unknown node",
+      "agent": "clinic",
+      "op": {
+        "type": "setInitialNode",
+        "node": "nope"
+      },
+      "error": "No node named 'nope'."
+    },
+    {
+      "name": "replaceAgent swaps the whole agent",
+      "agent": "clinic",
+      "op": {
+        "type": "replaceAgent",
+        "agent": {
+          "name": "Other",
+          "initial_node": "",
+          "nodes": []
+        },
+        "reason": "Imported JSON"
+      },
+      "label": "Imported JSON",
+      "expect": {
+        "name": "Other",
+        "nodes": [],
+        "persona": {
+          "$absent": true
+        }
+      }
+    },
+    {
+      "name": "addNode appends a node",
+      "agent": "clinic",
+      "op": {
+        "type": "addNode",
+        "node": {
+          "name": "intake",
+          "task_messages": [
+            {
+              "role": "developer",
+              "content": "Ask for DOB."
+            }
+          ]
+        }
+      },
+      "label": "Added node 'intake'",
+      "expect": {
+        "nodes.3.name": "intake",
+        "nodes.3.task_messages.0.content": "Ask for DOB."
+      }
+    },
+    {
+      "name": "addNode refuses a taken name",
+      "agent": "clinic",
+      "op": {
+        "type": "addNode",
+        "node": {
+          "name": "booking",
+          "task_messages": []
+        }
+      },
+      "error": "A node named 'booking' already exists."
+    },
+    {
+      "name": "updateNode merges the patch",
+      "agent": "clinic",
+      "op": {
+        "type": "updateNode",
+        "node": "booking",
+        "patch": {
+          "end": true
+        }
+      },
+      "label": "Edited node 'booking'",
+      "expect": {
+        "nodes.1.end": true,
+        "nodes.1.task_messages.0.content": "Book."
+      }
+    },
+    {
+      "name": "updateNode can clear the persona override",
+      "agent": "clinic",
+      "op": {
+        "type": "updateNode",
+        "node": "greeting",
+        "patch": {
+          "role_message": null
+        }
+      },
+      "expect": {
+        "nodes.0.role_message": null
+      }
+    },
+    {
+      "name": "updateNode refuses an unknown node",
+      "agent": "clinic",
+      "op": {
+        "type": "updateNode",
+        "node": "nope",
+        "patch": {
+          "end": true
+        }
+      },
+      "error": "No node named 'nope'."
+    },
+    {
+      "name": "renameNode rewrites every transition pointing at it",
+      "agent": "clinic",
+      "op": {
+        "type": "renameNode",
+        "from": "goodbye",
+        "to": "farewell"
+      },
+      "label": "Renamed node 'goodbye' to 'farewell'",
+      "expect": {
+        "nodes.2.name": "farewell",
+        "nodes.0.edges.1.target": "farewell",
+        "nodes.1.edges.0.target": "farewell",
+        "nodes.2.edges": {
+          "$absent": true
+        }
+      }
+    },
+    {
+      "name": "renameNode moves the start node with it",
+      "agent": "clinic",
+      "op": {
+        "type": "renameNode",
+        "from": "greeting",
+        "to": "hello"
+      },
+      "expect": {
+        "initial_node": "hello",
+        "nodes.0.name": "hello"
+      }
+    },
+    {
+      "name": "renameNode refuses a taken name",
+      "agent": "clinic",
+      "op": {
+        "type": "renameNode",
+        "from": "greeting",
+        "to": "booking"
+      },
+      "error": "A node named 'booking' already exists."
+    },
+    {
+      "name": "renameNode refuses an unknown node",
+      "agent": "clinic",
+      "op": {
+        "type": "renameNode",
+        "from": "nope",
+        "to": "other"
+      },
+      "error": "No node named 'nope'."
+    },
+    {
+      "name": "renameNode to the same name changes nothing",
+      "agent": "clinic",
+      "op": {
+        "type": "renameNode",
+        "from": "nope",
+        "to": "nope"
+      },
+      "same": true
+    },
+    {
+      "name": "deleteNode keeps incoming transitions but clears their target",
+      "agent": "clinic",
+      "op": {
+        "type": "deleteNode",
+        "node": "booking"
+      },
+      "label": "Deleted node 'booking'",
+      "expect": {
+        "nodes.1.name": "goodbye",
+        "nodes.2": {
+          "$absent": true
+        },
+        "nodes.0.edges.0.function": "book",
+        "nodes.0.edges.0.target": ""
+      }
+    },
+    {
+      "name": "deleteNode clears the start node if it was deleted",
+      "agent": "clinic",
+      "op": {
+        "type": "deleteNode",
+        "node": "greeting"
+      },
+      "expect": {
+        "initial_node": "",
+        "nodes.0.name": "booking"
+      }
+    },
+    {
+      "name": "deleteNode refuses an unknown node",
+      "agent": "clinic",
+      "op": {
+        "type": "deleteNode",
+        "node": "nope"
+      },
+      "error": "No node named 'nope'."
+    },
+    {
+      "name": "moveNodes sets positions and ignores unknown names",
+      "agent": "clinic",
+      "op": {
+        "type": "moveNodes",
+        "positions": {
+          "goodbye": {
+            "x": 5,
+            "y": 6
+          },
+          "nope": {
+            "x": 1,
+            "y": 1
+          }
+        }
+      },
+      "label": "Moved nodes",
+      "expect": {
+        "nodes.2.position": {
+          "x": 5,
+          "y": 6
+        },
+        "nodes.0.position": {
+          "x": 0,
+          "y": 0
+        },
+        "nodes.3": {
+          "$absent": true
+        }
+      }
+    },
+    {
+      "name": "addEdge creates the edge list if the node has none",
+      "agent": "clinic",
+      "op": {
+        "type": "addEdge",
+        "node": "goodbye",
+        "edge": {
+          "function": "restart",
+          "description": "Start over.",
+          "target": "greeting"
+        }
+      },
+      "label": "Added transition 'restart' from 'goodbye'",
+      "expect": {
+        "nodes.2.edges.0.function": "restart",
+        "nodes.2.edges.1": {
+          "$absent": true
+        }
+      }
+    },
+    {
+      "name": "addEdge appends after existing transitions",
+      "agent": "clinic",
+      "op": {
+        "type": "addEdge",
+        "node": "greeting",
+        "edge": {
+          "function": "urgent",
+          "description": "Emergency.",
+          "target": "goodbye"
+        }
+      },
+      "expect": {
+        "nodes.0.edges.2.function": "urgent",
+        "nodes.0.edges.0.function": "book"
+      }
+    },
+    {
+      "name": "addEdge refuses an unknown node",
+      "agent": "clinic",
+      "op": {
+        "type": "addEdge",
+        "node": "nope",
+        "edge": {
+          "function": "x",
+          "description": "x",
+          "target": "greeting"
+        }
+      },
+      "error": "No node named 'nope'."
+    },
+    {
+      "name": "updateEdge merges the patch into that transition",
+      "agent": "clinic",
+      "op": {
+        "type": "updateEdge",
+        "node": "greeting",
+        "index": 1,
+        "patch": {
+          "description": "Caller is done."
+        }
+      },
+      "label": "Edited a transition of 'greeting'",
+      "expect": {
+        "nodes.0.edges.1.description": "Caller is done.",
+        "nodes.0.edges.1.function": "bye"
+      }
+    },
+    {
+      "name": "updateEdge refuses an index past the end",
+      "agent": "clinic",
+      "op": {
+        "type": "updateEdge",
+        "node": "greeting",
+        "index": 2,
+        "patch": {
+          "description": "x"
+        }
+      },
+      "error": "Node 'greeting' has no transition #3."
+    },
+    {
+      "name": "updateEdge refuses a negative index",
+      "agent": "clinic",
+      "op": {
+        "type": "updateEdge",
+        "node": "greeting",
+        "index": -1,
+        "patch": {
+          "description": "x"
+        }
+      },
+      "error": "Node 'greeting' has no transition #0."
+    },
+    {
+      "name": "updateEdge refuses a node without transitions",
+      "agent": "clinic",
+      "op": {
+        "type": "updateEdge",
+        "node": "goodbye",
+        "index": 0,
+        "patch": {
+          "description": "x"
+        }
+      },
+      "error": "Node 'goodbye' has no transition #1."
+    },
+    {
+      "name": "deleteEdge removes that transition; later ones move up",
+      "agent": "clinic",
+      "op": {
+        "type": "deleteEdge",
+        "node": "greeting",
+        "index": 0
+      },
+      "label": "Deleted a transition of 'greeting'",
+      "expect": {
+        "nodes.0.edges.0.function": "bye",
+        "nodes.0.edges.1": {
+          "$absent": true
+        }
+      }
+    },
+    {
+      "name": "deleteEdge refuses an index past the end",
+      "agent": "clinic",
+      "op": {
+        "type": "deleteEdge",
+        "node": "booking",
+        "index": 5
+      },
+      "error": "Node 'booking' has no transition #6."
+    },
+    {
+      "name": "an unknown operation type is refused",
+      "agent": "clinic",
+      "op": {
+        "type": "explode"
+      },
+      "error": "Unknown operation 'explode'."
+    },
+    {
+      "name": "a missing required field is refused",
+      "agent": "clinic",
+      "op": {
+        "type": "renameNode",
+        "from": "greeting"
+      },
+      "error": "Operation 'renameNode' is missing 'to'."
+    },
+    {
+      "name": "updateAgent can set the fallback node",
+      "agent": "clinic",
+      "op": {
+        "type": "updateAgent",
+        "patch": {
+          "fallback_node": "goodbye"
+        }
+      },
+      "label": "Edited agent fallback_node",
+      "expect": {
+        "fallback_node": "goodbye"
+      }
+    },
+    {
+      "name": "renameNode moves the fallback node with it",
+      "agent": "clinic_with_fallback",
+      "op": {
+        "type": "renameNode",
+        "from": "goodbye",
+        "to": "farewell"
+      },
+      "expect": {
+        "fallback_node": "farewell"
+      }
+    },
+    {
+      "name": "deleteNode of the fallback node returns to the built-in ending",
+      "agent": "clinic_with_fallback",
+      "op": {
+        "type": "deleteNode",
+        "node": "goodbye"
+      },
+      "expect": {
+        "fallback_node": {
+          "$absent": true
+        },
+        "initial_node": "greeting"
+      }
+    },
+    {
+      "name": "deleteNode of another node keeps the fallback node",
+      "agent": "clinic_with_fallback",
+      "op": {
+        "type": "deleteNode",
+        "node": "booking"
+      },
+      "expect": {
+        "fallback_node": "goodbye"
+      }
+    }
+  ]
+}

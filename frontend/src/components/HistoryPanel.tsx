@@ -1,4 +1,4 @@
-import { ArrowLeft, Bot, PhoneIncoming, RotateCcw, Sparkles, User } from "lucide-react";
+import { ArrowLeft, Bot, FlaskConical, PhoneIncoming, RotateCcw, Sparkles, User } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useCall } from "../lib/call";
@@ -10,11 +10,13 @@ import Transcript from "./Transcript";
 export default function HistoryPanel({
   openCall,
   onOpenCall,
+  onSavedTest,
 }: {
   openCall: CallRecord | null;
   onOpenCall: (id: string | null) => void;
+  onSavedTest: () => void;
 }) {
-  if (openCall) return <CallDetail call={openCall} onBack={() => onOpenCall(null)} />;
+  if (openCall) return <CallDetail call={openCall} onBack={() => onOpenCall(null)} onSavedTest={onSavedTest} />;
   return (
     <div>
       <CallList onOpen={onOpenCall} />
@@ -53,7 +55,13 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
                 <PhoneIncoming size={14} className="shrink-0 text-slate-400" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm">
-                    Ended at <span className="font-mono">{c.final_node}</span>
+                    {c.final_node === "built_in_fallback" ? (
+                      "Polite ending (stuck)"
+                    ) : (
+                      <>
+                        Ended at <span className="font-mono">{c.final_node}</span>
+                      </>
+                    )}
                   </span>
                   <span className="block text-xs text-slate-500">
                     {timeAgo(c.started_at)} · {c.turns} turns ·{" "}
@@ -79,8 +87,24 @@ function Outcome({ endedBy }: { endedBy: CallSummary["ended_by"] }) {
   );
 }
 
-function CallDetail({ call, onBack }: { call: CallRecord; onBack: () => void }) {
+function CallDetail({ call, onBack, onSavedTest }: { call: CallRecord; onBack: () => void; onSavedTest: () => void }) {
   const version = useEditor((s) => s.version);
+  const agentId = useEditor((s) => s.agentId)!;
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const callerSpoke = call.events.some((e) => e.type === "user" && e.text.trim());
+
+  async function saveAsTest() {
+    setSaving(true);
+    setError(null);
+    try {
+      await api.createTestFromCall(agentId, call.id);
+      onSavedTest();
+    } catch (e) {
+      setError((e as Error).message);
+      setSaving(false);
+    }
+  }
   const collected = Object.entries(call.collected ?? {});
   const seconds = call.ended_at ? Math.round((+new Date(call.ended_at) - +new Date(call.started_at)) / 1000) : null;
 
@@ -106,6 +130,19 @@ function CallDetail({ call, onBack }: { call: CallRecord; onBack: () => void }) 
           {call.agent_version !== version && " (the canvas shows your current draft, which may differ)"}. The path it
           took is highlighted on the canvas.
         </p>
+        {callerSpoke && (
+          <div>
+            <button
+              onClick={saveAsTest}
+              disabled={saving}
+              className="flex items-center gap-1.5 rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              <FlaskConical size={12} /> Save as test
+            </button>
+            <p className="mt-1 text-slate-500">Replays what the caller said against your changes, and checks the outcome.</p>
+            {error && <p className="mt-1 text-red-600">{error}</p>}
+          </div>
+        )}
         {collected.length > 0 && (
           <div>
             <div className="mb-1 font-medium text-slate-700">Collected</div>

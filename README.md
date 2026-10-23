@@ -21,7 +21,7 @@ The reasoning behind the main design choices, and their known weaknesses, is in 
 - **Inspector:**
   - **Nodes:** rename (every reference follows), edit instructions, mark as the start or an end node, override the persona.
   - **Transitions:** function name, "when to take it" description, target, and the fields the LLM must collect (type, description, allowed values, required).
-  - **Agent:** name, persona, voice and model.
+  - **Agent:** name, persona, voice and model, plus where a stuck call goes (a node, or a polite ending). Agents speak English only.
 - **Live validation:** errors (red) and warnings (amber) are checked by the backend as you edit and pinned to the node or transition they belong to.
 - **Undo/redo** (⌘Z / ⇧⌘Z), with a readable label for every change.
 - **Versions:** each save is a new, immutable version with a message. History lists them, and any version can be restored.
@@ -30,6 +30,7 @@ The reasoning behind the main design choices, and their known weaknesses, is in 
   - The transcript appears live, with each transition and the data it collected.
   - The active node lights up on the canvas.
   - A transition the LLM attempts without its required data is refused and shown in amber, and the agent asks again.
+- **ProsperO, the copilot:** describe a medical voice agent, or a change to one, and ProsperO draws it on the canvas as a proposal you review, test with a call, then accept or reject. Start from **Describe a new agent** on the agent list, or the ProsperO panel in the editor.
 - **Call history:** every call is recorded with its transcript, path, collected data and the agent version it ran. Opening a call replays its path on the canvas.
 
 ## Requirements
@@ -41,6 +42,7 @@ The reasoning behind the main design choices, and their known weaknesses, is in 
   ELEVENLABS_API_KEY=...
   OPENAI_API_KEY=...
   ```
+  Optional: `PROSPERO_MODEL` picks the OpenAI model ProsperO uses (default `gpt-5.5`), and `PROSPERO_REASONING` its reasoning effort (default `none`, which is faster with the same results in testing).
   This file is gitignored. Voice and model are set per agent, not here.
 
 ## Quickstart
@@ -81,6 +83,8 @@ The editor finds the backend through `VITE_API_URL` (default `http://localhost:7
 | `backend/api.py` | The editor's HTTP API, added to the Pipecat runner's server (one process). |
 | `backend/call_guard.py` | Refuses call requests for agents with errors before a session is created. |
 | `backend/store.py` | Storage: agent versions in `backend/agents/{id}/versions/`, call records in `backend/calls/` (gitignored). |
+| `backend/prospero/` | ProsperO, the copilot: system prompt, tools generated from the operations, and the tool loop. |
+| `shared/operation-cases.json` | Test cases both the Python and TypeScript operations must pass. |
 | `backend/tests/` | pytest suite: validation, builder and transitions, call guard, store. |
 | `backend/example_flow.json` | The example agent, and the default for calls that don't name one. |
 | `frontend/src/lib/` | The editor's logic, with no UI: API client, agent operations (every edit is one), editor and call state, layout. |
@@ -96,9 +100,12 @@ Served on `:7860` next to Pipecat's own call endpoints (`/start`, `/sessions/…
 | `GET` / `PUT` / `DELETE /api/agents/{id}` | Latest version; save a new version (`base_version` guards against overwriting newer work, `409`); delete |
 | `GET /api/agents/{id}/versions[/{n}]` | Version history; one version |
 | `POST /api/agents/{id}/versions/{n}/restore` | Restore an old version as a new one |
+| `GET` / `POST /api/agents/{id}/tests`, `PUT` / `DELETE …/tests/{test_id}` | Regression tests: list, create from a call (`call_id`), edit, delete |
+| `POST /api/agents/{id}/tests/{test_id}/run` | Replay a test (3 times by default) against the latest version, or a draft sent as `agent` |
 | `GET /api/calls[?agent_id=…]`, `GET /api/calls/{id}` | Recorded calls |
 | `POST /api/validate` | Errors and warnings for a draft agent |
 | `GET /api/voices` | ElevenLabs voices for the voice picker |
+| `POST /api/copilot` | One ProsperO turn: the current agent, the chat and a message in; edits streamed out as server-sent events |
 
 ## Agent format
 

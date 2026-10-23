@@ -6,6 +6,9 @@ import type {
   CallRecord,
   CallSummary,
   Issue,
+  RegressionTest,
+  TestExpect,
+  TestRunResult,
   VersionMeta,
   VersionRecord,
   VersionSource,
@@ -78,6 +81,27 @@ export const api = {
     request<CallSummary[]>(`/api/calls${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ""}`),
 
   getCall: (id: string) => request<CallRecord>(`/api/calls/${id}`),
+
+  listTests: (agentId: string) => request<RegressionTest[]>(`/api/agents/${agentId}/tests`),
+
+  createTestFromCall: (agentId: string, callId: string) =>
+    request<RegressionTest>(`/api/agents/${agentId}/tests`, { method: "POST", body: json({ call_id: callId }) }),
+
+  updateTest: (
+    agentId: string,
+    testId: string,
+    fields: Partial<{ name: string; caller_turns: string[]; expect: TestExpect }>,
+  ) => request<RegressionTest>(`/api/agents/${agentId}/tests/${testId}`, { method: "PUT", body: json(fields) }),
+
+  deleteTest: (agentId: string, testId: string) =>
+    request<void>(`/api/agents/${agentId}/tests/${testId}`, { method: "DELETE" }),
+
+  /** Replays a test `repeats` times against `agent` (a draft), or the latest version if null. */
+  runTest: (agentId: string, testId: string, agent: Agent | null, repeats = 3) =>
+    request<TestRunResult>(`/api/agents/${agentId}/tests/${testId}/run`, {
+      method: "POST",
+      body: json({ agent, repeats }),
+    }),
 
   validate: (agent: Agent) =>
     request<{ issues: Issue[] }>("/api/validate", { method: "POST", body: json(agent) }),

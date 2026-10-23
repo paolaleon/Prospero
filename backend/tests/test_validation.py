@@ -182,3 +182,14 @@ def test_a_new_rule_only_needs_a_decorator():
         assert ("warning", "Use snake_case for node names.", "Done", None) in issues(data)
     finally:
         validation._NODE_RULES.remove(node_names_are_snake_case)
+
+
+# ---- fallback node (AD-16) -----------------------------------------------------------
+def test_fallback_node_must_exist():
+    assert ("error", "Fallback node 'nope' is not a defined node.", None, None) in issues(agent(fallback_node="nope"))
+
+
+def test_a_fallback_node_counts_as_reachable():
+    data = agent(fallback_node="staff")
+    data["nodes"].append({"name": "staff", "task_messages": [{"role": "developer", "content": "Apologise."}], "end": True})
+    assert issues(data) == set()  # not "Unreachable from the start node"

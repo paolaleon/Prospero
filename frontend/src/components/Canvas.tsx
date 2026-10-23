@@ -17,6 +17,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { LayoutGrid, Plus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { diffAgents, type AgentDiff } from "../lib/diff";
 import { autoLayout, NODE_WIDTH } from "../lib/layout";
 import { newEdge, newNode } from "../lib/operations";
 import { useEditor } from "../lib/store";
@@ -43,8 +44,18 @@ export default function Canvas({ live }: { live?: LiveView }) {
 }
 
 function FlowCanvas({ live }: { live?: LiveView }) {
-  const agent = useEditor((s) => s.draft)!;
-  const issues = useEditor((s) => s.issues);
+  const draft = useEditor((s) => s.draft)!;
+  const proposal = useEditor((s) => s.proposal);
+  // While a ProsperO proposal is open the canvas shows it, read-only, with its
+  // changes highlighted against the draft it started from.
+  const reviewing = proposal !== null;
+  const agent = proposal?.agent ?? draft;
+  const diff = useMemo(() => (proposal ? diffAgents(proposal.base, proposal.agent) : null), [proposal]);
+  // While reviewing, ProsperO's tidy layout of the whole proposal (laid out in
+  // the store after each edit) decides where every node goes.
+  const layout = reviewing ? proposal.layout : null;
+  const draftIssues = useEditor((s) => s.issues);
+  const issues = proposal?.issues ?? draftIssues;
   const selection = useEditor((s) => s.selection);
   const dispatch = useEditor((s) => s.dispatch);
   const select = useEditor((s) => s.select);
@@ -56,28 +67,52 @@ function FlowCanvas({ live }: { live?: LiveView }) {
   useEffect(() => {
     setNodes((prev) => {
       const measured = new Map(prev.map((n) => [n.id, n.measured]));
-      return agent.nodes.map((node, i) => {
+      const shown = agent.nodes.map((node, i) => {
         const liveState: LiveState | undefined =
           live?.activeNode === node.name ? "active" : live?.visitedNodes.has(node.name) ? "visited" : undefined;
         return {
           id: node.name,
           type: "agent",
-          position: node.position ?? { x: i * (NODE_WIDTH + 80), y: 0 },
+          position: layout?.[node.name] ?? node.position ?? { x: i * (NODE_WIDTH + 80), y: 0 },
           measured: measured.get(node.name),
           selected: selection?.node === node.name,
           data: {
             node,
             isStart: agent.initial_node === node.name,
+            isFallback: agent.fallback_node === node.name,
             issues: issues.filter((x) => x.node === node.name),
             selectedEdge: selection?.kind === "edge" && selection.node === node.name ? selection.index : null,
             live: liveState,
+            change: diff?.nodes[node.name],
           },
-        };
+        } satisfies AgentFlowNode;
       });
+      // Nodes the proposal deletes stay visible, faded, in a column to the left
+      // of the new layout (they aren't part of it: they won't be saved).
+      const left = Math.min(0, ...shown.map((n) => n.position.x)) - NODE_WIDTH - 110;
+      let top = Math.min(0, ...shown.map((n) => n.position.y));
+      const removed = (proposal?.base.nodes ?? [])
+        .filter((node) => diff?.nodes[node.name] === "removed")
+        .map(
+          (node): AgentFlowNode => ({
+            id: node.name,
+            type: "agent",
+            position: { x: left, y: (top += 160) - 160 },
+            measured: measured.get(node.name),
+            data: { node, isStart: false, issues: [], selectedEdge: null, change: "removed" },
+          }),
+        );
+      return [...shown, ...removed];
     });
-  }, [agent, issues, selection, live]);
+  }, [agent, issues, selection, live, diff, layout, proposal]);
 
-  const edges = useMemo(() => toFlowEdges(agent, selection, live), [agent, selection, live]);
+  const edges = useMemo(() => toFlowEdges(agent, selection, live, diff), [agent, selection, live, diff]);
+
+  // Keep a growing proposal in view: each edit can add nodes or move them
+  // (new transitions change the layout), so re-fit after every one.
+  useEffect(() => {
+    if (reviewing) requestAnimationFrame(() => fitView({ padding: 0.2, duration: 300 }));
+  }, [reviewing, agent, fitView]);
 
   const onNodesChange = useCallback((changes: NodeChange<AgentFlowNode>[]) => {
     // Selection is owned by the store; only apply geometry here.
@@ -157,8 +192,10 @@ function FlowCanvas({ live }: { live?: LiveView }) {
     select({ kind: "node", node: created.name });
   }
 
-  function tidyUp() {
-    dispatch({ type: "moveNodes", positions: autoLayout(agent) });
+  async function tidyUp() {
+    // Use the cards' measured sizes, so ELK spaces them exactly.
+    const sizes = Object.fromEntries(nodes.map((n) => [n.id, { width: n.measured?.width, height: n.measured?.height }]));
+    dispatch({ type: "moveNodes", positions: await autoLayout(agent, sizes) });
     requestAnimationFrame(() => fitView({ padding: 0.2, duration: 300 }));
   }
 
@@ -168,15 +205,20 @@ function FlowCanvas({ live }: { live?: LiveView }) {
       edges={edges}
       nodeTypes={nodeTypes}
       onNodesChange={onNodesChange}
+      nodesDraggable={!reviewing}
+      nodesConnectable={!reviewing}
+      elementsSelectable={!reviewing}
       onNodeDragStart={(_, n) => select({ kind: "node", node: n.id })}
       onNodeDragStop={onNodeDragStop}
-      onNodeClick={(_, n) => select({ kind: "node", node: n.id })}
-      onEdgeClick={(_, e) => select({ kind: "edge", node: e.source, index: Number(e.sourceHandle!.slice(2)) })}
+      onNodeClick={(_, n) => !reviewing && select({ kind: "node", node: n.id })}
+      onEdgeClick={(_, e) =>
+        !reviewing && select({ kind: "edge", node: e.source, index: Number(e.sourceHandle!.slice(2)) })
+      }
       onPaneClick={() => select(null)}
       onConnect={onConnect}
       onConnectEnd={onConnectEnd}
       onDelete={onDelete}
-      deleteKeyCode={["Backspace", "Delete"]}
+      deleteKeyCode={reviewing ? null : ["Backspace", "Delete"]}
       fitView
       fitViewOptions={{ padding: 0.2 }}
       minZoom={0.2}
@@ -184,7 +226,7 @@ function FlowCanvas({ live }: { live?: LiveView }) {
       <Background gap={20} color="#cbd5e1" />
       <Controls showInteractive={false} />
       <MiniMap pannable zoomable className="!bg-white" nodeColor={(n) => (n.selected ? "#6366f1" : "#cbd5e1")} />
-      <Panel position="top-left" className="flex gap-2">
+      <Panel position="top-left" className={`flex gap-2 ${reviewing ? "hidden" : ""}`}>
         <ToolButton onClick={addNodeAtCenter} title="Add a node">
           <Plus size={14} /> Node
         </ToolButton>
@@ -196,7 +238,12 @@ function FlowCanvas({ live }: { live?: LiveView }) {
   );
 }
 
-function toFlowEdges(agent: Agent, selection: ReturnType<typeof useEditor.getState>["selection"], live?: LiveView) {
+function toFlowEdges(
+  agent: Agent,
+  selection: ReturnType<typeof useEditor.getState>["selection"],
+  live?: LiveView,
+  diff?: AgentDiff | null,
+) {
   const names = new Set(agent.nodes.map((n) => n.name));
   const out: FlowEdge[] = [];
   for (const node of agent.nodes) {
@@ -205,7 +252,8 @@ function toFlowEdges(agent: Agent, selection: ReturnType<typeof useEditor.getSta
       const id = edgeId(node.name, index);
       const selected = selection?.kind === "edge" && selection.node === node.name && selection.index === index;
       const traversed = live?.traversedEdges.has(id) ?? false;
-      const color = selected ? "#6366f1" : traversed ? "#10b981" : "#94a3b8";
+      const proposed = diff?.edges[id] !== undefined;
+      const color = selected ? "#6366f1" : traversed ? "#10b981" : proposed ? "#8b5cf6" : "#94a3b8";
       out.push({
         id,
         source: node.name,
@@ -214,7 +262,7 @@ function toFlowEdges(agent: Agent, selection: ReturnType<typeof useEditor.getSta
         type: "smoothstep",
         selected,
         animated: traversed,
-        style: { stroke: color, strokeWidth: selected || traversed ? 2.5 : 1.5 },
+        style: { stroke: color, strokeWidth: selected || traversed || proposed ? 2.5 : 1.5 },
         markerEnd: { type: MarkerType.ArrowClosed, color },
       });
     });
