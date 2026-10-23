@@ -100,6 +100,8 @@ Served on `:7860` next to Pipecat's own call endpoints (`/start`, `/sessions/…
 | `GET` / `PUT` / `DELETE /api/agents/{id}` | Latest version; save a new version (`base_version` guards against overwriting newer work, `409`); delete |
 | `GET /api/agents/{id}/versions[/{n}]` | Version history; one version |
 | `POST /api/agents/{id}/versions/{n}/restore` | Restore an old version as a new one |
+| `GET` / `POST /api/agents/{id}/tests`, `PUT` / `DELETE …/tests/{test_id}` | Regression tests: list, create from a call (`call_id`), edit, delete |
+| `POST /api/agents/{id}/tests/{test_id}/run` | Replay a test (3 times by default) against the latest version, or a draft sent as `agent` |
 | `GET /api/calls[?agent_id=…]`, `GET /api/calls/{id}` | Recorded calls |
 | `POST /api/validate` | Errors and warnings for a draft agent |
 | `GET /api/voices` | ElevenLabs voices for the voice picker |

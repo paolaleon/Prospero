@@ -29,6 +29,7 @@ This file records the project's architectural decisions (ADs): decisions that ar
 | AD-15 | Every agent speaks English only, fixed in speech recognition, the voice and every node |
 | AD-16 | A call stuck in a node for two failures in a row is moved to a fallback by the runtime |
 | AD-17 | Every node gets a "no medical advice" rule from the runtime, whatever the persona says |
+| AD-18 | Recorded calls become regression tests, replayed as text through the real graph and LLM, several times each |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -416,7 +417,7 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 
 **Likely challenges.**
 - *"It's slow."* Measured on the same prompt: `gpt-5.5` with default reasoning took about 30 seconds, with the first edits after about 15. With reasoning off (now the default, `PROSPERO_REASONING=none`), the first edits arrive after about 9 seconds and a build takes 23 to 29 seconds, with the same validity and medical defaults. Most of the time is spent writing out the edits (about 1,000 tokens per reply), not thinking. The loop streams replies and applies each tool call as soon as it's complete, but OpenAI delivers `gpt-5.5`'s tool calls all at the end of a reply, on both its APIs, so edits still arrive in bursts. `gpt-4.1` streams small replies and draws continuously from about 2 seconds (21 seconds per build, all checks passed on one prompt), but it's a less capable model; it remains available through `PROSPERO_MODEL`. `gpt-5.4-mini` was faster still but stopped before finishing. The editor plays bursts onto the canvas one edit at a time and shows what ProsperO is doing, so the wait is visible rather than silent.
-- *"Valid isn't the same as good."* True. Validation guarantees the agent runs, not that it handles callers well. The medical defaults in the prompt help; regression tests from recorded calls (Phase 2 backlog) are the real measure.
+- *"Valid isn't the same as good."* True. Validation guarantees the agent runs, not that it handles callers well. The medical defaults in the prompt help; regression tests from recorded calls (AD-18) are the real measure.
 - *"Anyone who reaches the endpoint spends your OpenAI credit."* As with test calls (AD-5), fine locally; a deployment needs sign-in and rate limits.
 - *"The model could ignore the medical defaults."* It followed them in the first real build, but nothing enforces them yet. Medical validation rules (AD-11) are the planned backstop.
 
@@ -565,12 +566,54 @@ ProsperO's prompt no longer asks the persona to say it; it only tells ProsperO n
 
 ---
 
+## AD-18: Recorded calls become regression tests, replayed as text through the real graph and LLM, several times each
+
+**Decision.** Any recorded call can be saved as a **test** of its agent (`backend/regression/`, stored in `agents/{id}/tests/`, a Tests tab in the editor). A test is:
+- **What the caller said**, in order, taken from the call and editable.
+- **Expectations, checked in code:** the node the call should end at, and the fields it should collect. They start as what happened on the call.
+- **Checks on what the agent says, judged by a grader model:** sentences like "Offers to book an appointment". The no-medical-advice check (AD-17) is **always** added.
+
+A run **replays** the caller's turns as text through the same `AgentBuilder` graph, Pipecat Flows runtime and LLM as a voice call, without speech. Each caller turn is sent once the agent has finished answering, transitions included. The same record a call produces (AD-7) comes out, and the expectations are checked against it. Each test is replayed **3 times** (up to 5) and reports how many passed. Tests run against the latest version, the unsaved draft, or ProsperO's proposal, like test calls (AD-5). An agent with errors doesn't run. The latest score is kept on the test.
+
+The grader is a separate model call **after** the replay, with a fixed rubric. It must quote the agent's words for each verdict, and a check without a verdict fails.
+
+**Product argument.**
+- **Every bad call becomes a permanent guard.** The toothache call that gave advice is now a test; any change that brings the advice back fails it. This closes the loop between call data and editing that Phase 2 asks for.
+- **Change with confidence.** Clinics and ProsperO can edit an agent and see in seconds whether the calls that used to work still do, without placing voice calls one by one.
+- **Tests are made from real calls, not written from scratch.** One click, with expectations filled in from what happened. Users only add the rules they care about.
+
+**AI angle.**
+- **LLMs vary, so one pass proves little.** Repeating each replay and reporting a pass rate (3/3, 2/3) shows flakiness instead of hiding it.
+- **Plain code where possible, a model only where judgement is needed.** Where the call ended and what it collected are facts in the record. "Did it give advice?" isn't, so a grader judges it.
+- **The grader is safe where a call-time judge wasn't.** Judging in a call (like the language detection that was removed, AD-15) can break a real conversation when wrong. A grader runs offline: a wrong verdict only flags a test for a person, and its quoted evidence makes that quick.
+- **It tests the real thing.** Replays use the production graph builder, guards (AD-10, AD-16, AD-17) and Flows runtime, not a re-implementation, so they can't drift from what calls run.
+- **The groundwork for ProsperO iterating from data:** failing tests, with evidence, are exactly the input a copilot needs to propose a fix, and the pass rate is how to tell whether its fix worked.
+
+**Alternatives considered.**
+- **A simulated caller** (an LLM playing the patient). Deferred: it adapts when the agent changes its questions, but adds a second source of randomness and drifts from what real callers said. Scripted turns are reproducible and come straight from data. A simulated caller fits conversations that branch, and can be added later as another kind of test.
+- **Replaying the audio** through speech recognition. Rejected for now: slower, costs speech credits, and adds recognition noise to a test about the agent's logic. Voice problems need their own tests.
+- **Exact matching of the agent's words.** Rejected: an LLM never says the same sentence twice, so every test would fail.
+- **Pattern checks** (keywords such as "ibuprofen") instead of a grader. Rejected as the only check: they miss paraphrases ("rinse with warm salt water"). They could be added as cheap extra checks.
+- **Tests attached to a version.** Rejected: tests describe what every version should keep doing, so they belong to the agent.
+
+**Cost of reversal.** Low. Tests are separate files per agent, the replay only reads the agent, and nothing else depends on them.
+
+**Likely challenges.**
+- *"Scripted turns break when the agent changes its questions."* Yes. If the agent now asks for the date of birth first, the caller's recorded answer may not fit. The test then fails or ends early (the run reports unused turns), and the turns can be edited. That's the trade for reproducibility.
+- *"The grader can be wrong."* It can. It's told to quote evidence, uses a fixed rubric, and fails a check it can't judge. A test failing on a false verdict costs a look, not a caller.
+- *"Text replays skip the voice."* They do. Misheard speech, interruptions and timing are out of scope, and test calls remain the way to check those.
+- *"Cost and time."* Each replay is a few LLM calls plus one grader call; the 3 replays of a 3-turn call run side by side in about 10 to 20 seconds. At most 6 run at once to stay within rate limits.
+
+**Revisit when** tests should run automatically (on save, or before accepting a ProsperO proposal), when agents have conversations that branch enough to need a simulated caller, or when ProsperO starts fixing failing tests.
+
+---
+
 ## Gaps to prepare for
 
 These aren't decisions yet. They're the questions an AI product reviewer is most likely to ask.
 
 1. **Reviewing AI edits.** Versions and rollback exist (AD-4). Still missing is a visual diff of a proposed change on the canvas, with accept and reject, before it becomes a version.
-2. **Evaluations.** Calls are recorded (AD-7). Still missing are scripted test conversations with expected paths ("a caller who wants to cancel should reach `cancel_confirm`"), run after every change to catch regressions. (AD-3, AD-7)
+2. **Evaluations.** Partly addressed: recorded calls can be saved as tests and replayed against any change (AD-18). Still missing: running them automatically (on save, or before accepting a ProsperO proposal), a simulated caller for conversations that branch, tests of the voice layer, and ProsperO reading failing tests to propose fixes. (AD-3, AD-7, AD-18)
 3. **Routing reliability.** Partly addressed: a transition missing required data, or with a value outside its allowed list, is refused and the LLM asks again (AD-10), and after two failures in a row the call moves to a fallback (AD-16). Still missing: recovery when the LLM never calls a function or picks the wrong edge, global edges available from every node (such as "talk to a human"), a limit on turns per node, and detecting plausible but invented values. (AD-2, AD-3, AD-10)
 4. **Running arbitrary prompts on shared keys.** Sign-in, rate limits and per-user quotas before anything is deployed. (AD-5)
 5. **Patient data in transcripts and collected fields.** Encryption, retention limits, access controls and masking before real traffic. (AD-6, AD-7)
