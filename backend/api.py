@@ -8,6 +8,8 @@
 #   /api/agents[/{id}]                     list, create, read latest, save new version, delete
 #   /api/agents/{id}/versions[/{n}]        version history
 #   /api/agents/{id}/versions/{n}/restore  roll back (as a new version)
+#   /api/agents/{id}/tests[/{test_id}]     regression tests: list, create (from a call), edit, delete
+#   /api/agents/{id}/tests/{test_id}/run   replay a test against a version or the draft
 #   /api/calls[/{id}]                      recorded calls
 #   /api/validate                          structured errors/warnings for a draft agent
 #   /api/voices                            ElevenLabs voices for the voice picker
@@ -23,12 +25,13 @@ import time
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, Response
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
 import prospero
+import regression
 import store
 from call_guard import StartValidationMiddleware
 from http_common import http_error, issues_json
@@ -52,6 +55,24 @@ class SaveVersion(BaseModel):
     message: str = ""
     source: str = "human"
     base_version: Optional[int] = None  # version the edit started from
+
+
+class CreateTest(BaseModel):
+    call_id: Optional[str] = None  # make the test from this call
+    name: Optional[str] = None     # or write it out
+    caller_turns: Optional[list] = None
+    expect: Optional[dict] = None
+
+
+class EditTest(BaseModel):
+    name: Optional[str] = None
+    caller_turns: Optional[list] = None
+    expect: Optional[dict] = None
+
+
+class RunTest(BaseModel):
+    agent: Optional[dict] = None  # an unsaved draft; the latest version if omitted
+    repeats: int = regression.runner.DEFAULT_REPEATS
 
 
 class CopilotTurn(BaseModel):
@@ -138,6 +159,73 @@ def register_routes(app: FastAPI) -> None:
         except (store.NotFound, ValueError) as e:
             raise http_error(e)
         return _with_issues(agent_id, record)
+
+    # -- regression tests (AD-18) --
+    @app.get("/api/agents/{agent_id}/tests")
+    async def list_tests(agent_id: str):
+        try:
+            return store.list_tests(agent_id)
+        except (store.NotFound, ValueError) as e:
+            raise http_error(e)
+
+    @app.post("/api/agents/{agent_id}/tests", status_code=201)
+    async def create_test(agent_id: str, req: CreateTest):
+        try:
+            if req.call_id:
+                call = store.get_call(req.call_id)
+                if call.get("agent_id") != agent_id:
+                    raise ValueError("That call was made with another agent.")
+                test = regression.from_call(call)
+            else:
+                fields = req.model_dump(exclude_none=True, exclude={"call_id"})
+                fields.setdefault("expect", {})
+                base = {"id": store.new_test_id(), "created_at": store.now(), "from_call": None, "last_run": None}
+                test = regression.clean(fields, base)
+                if "name" not in test or "caller_turns" not in test:
+                    raise ValueError("A test needs a name and what the caller says.")
+            return store.save_test(agent_id, test)
+        except (store.NotFound, ValueError) as e:
+            raise http_error(e)
+
+    @app.put("/api/agents/{agent_id}/tests/{test_id}")
+    async def edit_test(agent_id: str, test_id: str, req: EditTest):
+        try:
+            test = regression.clean(req.model_dump(exclude_none=True), store.get_test(agent_id, test_id))
+            return store.save_test(agent_id, test)
+        except (store.NotFound, ValueError) as e:
+            raise http_error(e)
+
+    @app.delete("/api/agents/{agent_id}/tests/{test_id}", status_code=204)
+    async def delete_test(agent_id: str, test_id: str):
+        try:
+            store.delete_test(agent_id, test_id)
+        except (store.NotFound, ValueError) as e:
+            raise http_error(e)
+        return Response(status_code=204)
+
+    @app.post("/api/agents/{agent_id}/tests/{test_id}/run")
+    async def run_test(agent_id: str, test_id: str, req: RunTest):
+        try:
+            test = store.get_test(agent_id, test_id)
+            if req.agent is not None:
+                agent, version = req.agent, None
+            else:
+                record = store.get_version(agent_id)
+                agent, version = record["agent"], record["version"]
+        except (store.NotFound, ValueError) as e:
+            raise http_error(e)
+        if not 1 <= req.repeats <= regression.runner.MAX_REPEATS:
+            raise HTTPException(400, f"Repeats must be between 1 and {regression.runner.MAX_REPEATS}.")
+        # Same rule as a call: an agent with errors doesn't run (AD-2).
+        issues = issues_json(agent)
+        if any(i["severity"] == "error" for i in issues):
+            return JSONResponse({"detail": "Agent has errors.", "issues": issues}, status_code=422)
+
+        result = await regression.run(agent, test, req.repeats, agent_id=agent_id, version=version)
+        # The latest result is kept on the test, so the list shows it.
+        test["last_run"] = {k: result[k] for k in ("at", "agent_version", "passed", "total")}
+        store.save_test(agent_id, test)
+        return result
 
     # -- calls --
     @app.get("/api/calls")
