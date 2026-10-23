@@ -1,12 +1,12 @@
 // Right-hand panel: edits whatever is selected on the canvas, or the agent's own
 // settings when nothing is. Every change is dispatched as an operation.
 
-import { ChevronDown, ChevronRight, Flag, Play, Plus, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Flag, Play, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { newEdge } from "../lib/operations";
 import { issuesFor, useEditor } from "../lib/store";
-import type { Agent, AgentNode, Edge, Issue, LanguageOption, PropSchema, PropType, Voice } from "../lib/types";
+import type { Agent, AgentNode, Edge, Issue, PropSchema, PropType, Voice } from "../lib/types";
 import {
   CommitInput,
   IDENTIFIER_RE,
@@ -77,7 +77,7 @@ function AgentSettings({ agent }: { agent: Agent }) {
         </div>
       </Section>
 
-      <Section title="Voice, language and model">
+      <Section title="Voice and model">
         <div>
           <Label>Voice (ElevenLabs)</Label>
           <Select
@@ -94,7 +94,7 @@ function AgentSettings({ agent }: { agent: Agent }) {
             ))}
           </Select>
         </div>
-        <LanguagesPicker agent={agent} />
+        <p className="text-xs text-slate-500">Language: English. Agents speak only English, whatever the caller speaks.</p>
         <div>
           <Label hint="After 2 failures in a row in a node">When the call gets stuck</Label>
           <Select
@@ -111,8 +111,8 @@ function AgentSettings({ agent }: { agent: Agent }) {
             ))}
           </Select>
           <p className="mt-1 text-xs text-slate-500">
-            A caller who can't give what a step needs, or keeps speaking another language, isn't left stuck: the
-            call moves on here instead of asking again.
+            A caller who can't give what a step needs isn't left stuck: after two tries, the call moves on here
+            instead of asking again.
           </p>
         </div>
         <div>
@@ -156,78 +156,6 @@ function AgentSettings({ agent }: { agent: Agent }) {
           </ul>
         )}
       </Section>
-    </div>
-  );
-}
-
-// ---- languages (AD-15) ----------------------------------------------------------
-function LanguagesPicker({ agent }: { agent: Agent }) {
-  const dispatch = useEditor((s) => s.dispatch);
-  const [options, setOptions] = useState<LanguageOption[]>([]);
-  useEffect(() => {
-    api.languages().then(setOptions, () => setOptions([{ code: "en", name: "English" }]));
-  }, []);
-
-  const languages = agent.languages?.length ? agent.languages : ["en"];
-  const name = (code: string) => options.find((o) => o.code === code)?.name ?? code;
-  const set = (next: string[]) => dispatch({ type: "updateAgent", patch: { languages: next } });
-
-  return (
-    <div>
-      <Label hint="The agent only speaks these">Languages</Label>
-      <div className="flex flex-wrap gap-1.5">
-        {languages.map((code, i) => (
-          <span
-            key={code}
-            className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${
-              i === 0 ? "border-indigo-300 bg-indigo-50 text-indigo-800" : "border-slate-300 bg-white text-slate-700"
-            }`}
-          >
-            {i === 0 ? (
-              <span>
-                {name(code)} <span className="text-indigo-500">· default</span>
-              </span>
-            ) : (
-              <button
-                title="Make this the default language"
-                onClick={() => set([code, ...languages.filter((c) => c !== code)])}
-                className="hover:underline"
-              >
-                {name(code)}
-              </button>
-            )}
-            {languages.length > 1 && (
-              <button
-                title={`Remove ${name(code)}`}
-                onClick={() => set(languages.filter((c) => c !== code))}
-                className="text-slate-400 hover:text-red-600"
-              >
-                <X size={11} />
-              </button>
-            )}
-          </span>
-        ))}
-        <select
-          value=""
-          onChange={(e) => e.target.value && set([...languages, e.target.value])}
-          className="rounded-full border border-dashed border-slate-300 bg-white px-2 py-0.5 text-xs text-slate-500"
-        >
-          <option value="">+ Add</option>
-          {options
-            .filter((o) => !languages.includes(o.code))
-            .map((o) => (
-              <option key={o.code} value={o.code}>
-                {o.name}
-              </option>
-            ))}
-        </select>
-      </div>
-      <p className="mt-1 text-xs text-slate-500">
-        {languages.length === 1
-          ? `Callers are answered in ${name(languages[0])} only.`
-          : `Starts in ${name(languages[0])} and mentions ${languages.slice(1).map(name).join(", ")}; the first of these the caller speaks is kept for the whole call.`}{" "}
-        Anything said in another language isn't passed to the agent, and no action is taken on it.
-      </p>
     </div>
   );
 }

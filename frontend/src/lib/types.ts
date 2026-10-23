@@ -45,8 +45,6 @@ export interface Agent {
   persona?: string;
   voice_id?: string;
   model?: string;
-  /** ISO 639-1 codes, default first; English only when absent (AD-15). */
-  languages?: string[];
   /** Node a stuck call is moved to; absent or null: a built-in polite ending (AD-16). */
   fallback_node?: string | null;
 }
@@ -98,8 +96,8 @@ export type CallEvent =
       args: Record<string, unknown>;
     }
   | {
-      // The call locked to a language, or the caller spoke one the call doesn't use
-      // (their words weren't passed to the LLM). See AD-15.
+      // Only in calls recorded while a language guard existed (since removed, AD-15):
+      // the call locked to a language, or the caller's words in another weren't passed on.
       t: string;
       type: "language";
       action: "locked" | "blocked";
@@ -111,7 +109,7 @@ export type CallEvent =
       t: string;
       type: "fallback";
       from_node: string;
-      reason: "missing information" | "language";
+      reason: "missing information" | "language"; // "language": older calls only
       to_node: string;
     }
   | {
@@ -141,11 +139,6 @@ export interface CallRecord extends Omit<CallSummary, "turns" | "agent_name"> {
   agent: Agent;
   collected: Record<string, unknown>;
   events: CallEvent[];
-}
-
-export interface LanguageOption {
-  code: string;
-  name: string;
 }
 
 export interface Voice {
