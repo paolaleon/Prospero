@@ -26,7 +26,7 @@ This file records the project's architectural decisions (ADs): decisions that ar
 | AD-12 | Operations exist in Python and TypeScript, held identical by shared test cases |
 | AD-13 | ProsperO is a stateless tool loop on the backend that edits through operations and can't finish with errors |
 | AD-14 | ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step |
-| AD-15 | The runtime manages a call's language: it detects every utterance, locks the call to the first allowed language, and takes no action on any other |
+| AD-15 | Every agent speaks English only, fixed in speech recognition, the voice and every node |
 | AD-16 | A call stuck in a node for two failures in a row is moved to a fallback by the runtime |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
@@ -454,62 +454,55 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 - *"Removed transitions aren't shown."* Correct. Removed nodes are, but a removed transition only shows as its node being "Changed". A per-transition view would need ghost edges.
 - *"I can't accept part of a proposal."* Not yet: it's all or nothing. Rejecting and asking ProsperO for a narrower change is the workaround. Per-edit accept would build on the same edit list.
 
-**Revisit when** users need partial acceptance, or several people (or## AD-15: The runtime manages a call's language: it detects every utterance, locks the call to the first allowed language, and takes no action on any other
-
-**Decision.** Language is a property of the **call**, managed by the runtime, not by the agent's nodes or the LLM:
-- **Each agent lists its allowed languages,** default first (`languages`, ISO 639-1 codes), set in Agent settings or by ProsperO. Without the field it's English only.
-- **Every utterance's language is detected** by speech-to-text (ElevenLabs, with language detection on).
-- **`LanguageGuard`** (`backend/language_guard.py`) sits between speech-to-text and the LLM:
-  - **Lock after the first choice.** The call starts in the default language. The first *allowed* language the caller speaks becomes the call's language for the rest of the call. The guard then adds a system message ("From now on, reply only in Spanish") and switches the voice to that language, before the caller's words reach the LLM.
-  - **No action on anything else.** An utterance in a language the call doesn't use (not allowed, or allowed but after the lock) is replaced by a note: the words never reach the LLM, and the note says exactly what to reply ("I'm sorry, I can only help in English."). While that's the case, the builder refuses every transition (as in AD-10), so nothing can be collected or changed.
-  - **Undetected utterances pass through.** The guard only acts on a positive detection.
-- **Every node's rule names the call's language.** The builder adds the language rule to every node, after any persona override, and uses the locked language for nodes built after the lock.
-- **Recorded:** each lock and block is a `language` event in the call record (the language and what was said), shown in the transcript. The guard's notes are kept out of the caller's turns.
-
-**Product argument.**
-- **The clinic decides which languages its agent speaks, and the agent sticks to them.** Before, language was only an instruction to the LLM. In testing, agents switched languages mid-call, answered refusals in the wrong language, and said the occasional word in Spanish on an English-only agent.
-- **No odd accents:** the voice is told which language it's speaking, from the start and after a lock.
-- **Nothing in the graph:** no node has to handle language, so ProsperO and people can't get it wrong. ProsperO is told not to write anything about languages into the persona, greeting or nodes.
-
-**AI angle.** This is a guardrail around the LLM, not an instruction to it:
-- **What the model never sees, it can't act on, misread or make things up from.** Words in another language aren't passed on, so the model can't half-understand them and invent a booking, a name or a symptom.
-- **Deterministic code decides; the LLM only phrases.** Whether the call locks, what language it continues in, and whether a transition is allowed are decided by the guard and the builder, the same way every time. The model is only asked to say a fixed sentence.
-- **Defence in depth:** even if the model ignored the note and called a transition, the transition would be refused (AD-10), and the refusal is recorded.
-
-**Alternatives considered.**
-- **Language handling in the graph** (a first node that asks for the language, with every node remembering it). Rejected: every agent would re-implement it, it can't control speech recognition or the voice, and it still relies on the LLM obeying.
-- **A rule in the prompt only** (the previous version of this decision). Replaced after testing showed the LLM doesn't follow it reliably, and that speech recognition and the voice weren't following the call's language.
-- **Following the caller whenever they switch.** Rejected (the user's choice): a single misdetected sentence could switch the whole call mid-booking.
-- **English only, for every agent.** Considered; kept as the default rather than the only option, because multilingual clinics are real, and the guard makes several languages safe.
-
-**Cost of reversal.** Medium. The guard, the builder and the call record all assume runtime-managed languages, but agents don't depend on it: removing it leaves their graphs unchanged.
-
-**Likely challenges.**
-- *"Language detection makes mistakes."* Yes, especially on short fragments. In testing with a synthetic voice, Spanish "por favor" was detected as English ("All favor."), and two Spanish sentences on a Spanish-locked call were detected as English and blocked. A misdetection fails safe (no action and a polite repeat), but it can frustrate a caller. Real voices are likely detected better than the synthetic test voice; this hasn't been measured yet.
-- *"The first words decide the call's language."* If the first utterance is misdetected as another allowed language, the call locks to it. A short greeting is the riskiest case.
-- *"ElevenLabs sends each transcript twice with language detection on."* It sends a plain and a timestamped final transcript, and Pipecat passed both on, so the LLM received every sentence twice. Turning on timestamps makes Pipecat use only the timestamped one; that's set in `bot.py`.
-- *"Patient data in other languages is recorded."* What the caller said is kept in the `language` event, for review. It's the same data as any transcript (AD-7).
-
-**Revisit when** misdetections show up in real calls (require a minimum length or repeated detection before locking or blocking), or clinics need a language per node, such as a Spanish-only line.
+**Revisit when** users need partial acceptance, or several people (or ProsperO and a person) need to edit at the same time.
 
 ---
 
-languages per node (for example, a Spanish-only line).
+## AD-15: Every agent speaks English only, fixed in speech recognition, the voice and every node
+
+**Decision.** Agents speak English, and only English. There's no language setting.
+- **Speech recognition and the voice are fixed to English** (`bot.py`). Nothing detects the caller's language.
+- **The builder adds an English-only rule to every node,** after the persona or any per-node persona override, so no node can drop it (`backend/agent_builder/english.py`). If the caller doesn't speak English, the agent says in English that it can only help in English.
+- **Speech in another language comes through as garbled English text**, which gives the agent nothing meaningful to act on. A caller who can't continue reaches the fallback after two refused transitions in a row (AD-16).
+- **ProsperO** is told agents are English only, and never to write anything about languages into a persona, greeting or node.
+
+**How we got here.** This decision was changed twice; both earlier versions were tested on real calls and dropped:
+1. **A per-agent list of languages, enforced by a prompt rule.** Agents with several languages spoke them as configured, but switched languages unpredictably, answered refusals in the wrong language, and English voices spoke Spanish with an English accent. Even English-only agents occasionally said a word in another language.
+2. **A runtime language guard.** Speech recognition detected each utterance's language; the call locked to the first allowed one, and anything else was kept from the LLM, with no action taken. It worked in principle, but **detection is unreliable on short utterances**: "por favor" came through as English, Spanish sentences on a Spanish call were blocked as English, and with two failures triggering the fallback (AD-16), misdetections started ending calls. It also needed workarounds (ElevenLabs sends each transcript twice with detection on).
+
+**Product argument.**
+- **Predictable and easy to explain:** one language, one voice, no settings to misconfigure, no surprises mid-call.
+- **No false blocks:** English speakers are never refused because a short phrase was misdetected.
+- **A natural accent:** the voice always speaks the language it was designed for.
+
+**AI angle.**
+- **Fewer moving parts around the LLM.** Fixing the language at the edges (speech in, speech out) removes a whole class of model decisions, so there's less to go wrong and less to test.
+- **A lesson worth keeping:** a deterministic guard is only as good as the signal it acts on. Language detection on two-word utterances isn't reliable enough to gate a medical call on.
+
+**Alternatives considered.**
+- **One language per agent** (e.g. a Spanish-only line), with recognition and voice fixed to it. A small step from here (the same fixed-language mechanism with a different code), deferred until a client needs it.
+- **Keeping the guard with stricter detection** (only longer utterances, or repeated detections). Rejected for now: still some misdetections, and more to tune.
+- **The two earlier versions above.**
+
+**Cost of reversal.** Low. A single fixed language is the simplest setup; supporting another language per agent would reuse it.
+
+**Likely challenges.**
+- *"Non-English callers get little help."* True. They're told the agent can only help in English, and the fallback ends the call politely if they can't continue. Multilingual clinics need another solution (per-agent language, or human staff).
+- *"Garbled transcripts of other languages still reach the LLM."* Yes. That's the trade-off for not relying on detection. The English-only rule and the required-data checks (AD-10) keep it from acting on them meaningfully.
+- *"Old agents and calls mention languages."* Agents saved with a `languages` list still load; the field is ignored. Old call records with language events still display in History.
+
+**Revisit when** a client needs a non-English line (fix that agent's language instead), or language detection becomes reliable on short utterances.
 
 ---
 
 ## AD-16: A call stuck in a node for two failures in a row is moved to a fallback by the runtime
 
-**Decision.** Guards that refuse (AD-10's required data, AD-15's language guard) could leave a call looping on the same node until the caller hung up. Now the runtime counts **consecutive failures in the current node** (`backend/agent_builder/builder.py`):
-- **refused transitions:** required data missing, a value not allowed, or the caller off-language;
-- **blocked utterances:** speech in a language the call doesn't use.
-
-The counts reset when the call moves to another node, and blocked utterances also reset when the caller speaks the call's language again. On the **second** failure in a row, the call is moved to the agent's **fallback**, without asking the LLM:
+**Decision.** Refusing transitions without the data they require (AD-10) could leave a call looping on the same node until the caller hung up. Now the runtime counts **consecutive refused transitions in the current node** (`backend/agent_builder/builder.py`): required data missing, or a value that isn't allowed. The count resets when the call moves to another node. On the **second** refusal in a row, the call is moved to the agent's **fallback**, without asking the LLM:
 - **The agent's own fallback node**, if `fallback_node` is set (in Agent settings, "When the call gets stuck", or by ProsperO, which gives medical agents a short "handoff to staff" end node).
-- **Otherwise a built-in polite ending:** the agent apologises in the call's language, says the clinic's staff can help directly, and ends the call.
+- **Otherwise a built-in polite ending:** the agent apologises, says the clinic's staff can help directly, and ends the call.
 - **The fallback never falls back again,** so a stuck call can't loop.
 
-On a blocked utterance, the guard drops the words once the fallback is taken, so only the fallback speaks. Each fallback is a `fallback` event in the call record (from which node, why, to where), and counts as where the call ended. The fallback node is marked on the canvas, and validation counts it as reachable and checks that it exists. Rename and delete keep `fallback_node` up to date (shared test cases, AD-12).
+Each fallback is a `fallback` event in the call record (from which node, why, to where), and counts as where the call ended. The fallback node is marked on the canvas, and validation counts it as reachable and checks that it exists. Rename and delete keep `fallback_node` up to date (shared test cases, AD-12).
 
 **Product argument.**
 - **No caller is left in a loop.** The worst experience on a voice line is hearing the same question again and again. After two misses, the call ends gracefully or goes where the clinic chose.
@@ -518,11 +511,11 @@ On a blocked utterance, the guard drops the words once the fallback is taken, so
 
 **AI angle.**
 - **Recovery doesn't depend on the LLM noticing it's stuck.** Counting and moving the call are plain code, the same every time. The LLM only says the fallback's lines.
-- **It closes the gap the hard guards opened.** Refusing to act on missing or off-language input is right, but on its own it fails the caller. A bounded number of retries plus a deterministic exit keeps the guards safe *and* usable.
+- **It closes the gap the hard guards opened.** Refusing to act on missing input is right, but on its own it fails the caller. A bounded number of retries plus a deterministic exit keeps the guards safe *and* usable.
 - **A Phase 2 signal:** repeated fallbacks from one node mean its instructions or required fields need work, which the copilot can target.
 
 **Alternatives considered.**
-- **Asking the LLM to give up when stuck** (a prompt rule). Rejected: that's the unreliable pattern AD-15 replaced.
+- **Asking the LLM to give up when stuck** (a prompt rule). Rejected: that relies on the model noticing, which isn't reliable.
 - **A global "talk to a human" transition** available in every node. Deferred: there's no phone system to transfer to yet; the fallback node can play that role once there is.
 - **A limit on turns per node** (stuck without any refusal, e.g. the LLM never calls a transition). Not covered yet; see gap 3.
 - **Three failures (or five)** before falling back. The user chose two: recover quickly.
@@ -530,8 +523,8 @@ On a blocked utterance, the guard drops the words once the fallback is taken, so
 **Cost of reversal.** Low. The fallback is optional per agent, and removing the counter restores the previous behaviour.
 
 **Likely challenges.**
-- *"Two is strict: one misheard answer and one retry ends the call."* True, by choice. With language detection mistakes (AD-15), a caller speaking the right language can reach the fallback if two utterances in a row are misdetected. The limit is one constant (`FAILURE_LIMIT`) if it needs tuning.
-- *"The built-in ending can't take a message."* Correct. It only tells the caller how to get help. An agent that should take a message needs its own fallback node; but a node that asks for details can't help a caller who's off-language, which is why ProsperO's fallback nodes don't ask for anything.
+- *"Two is strict: one misheard answer and one retry ends the call."* True, by choice. The limit is one constant (`FAILURE_LIMIT`) if it needs tuning.
+- *"The built-in ending can't take a message."* Correct. It only tells the caller how to get help. An agent that should take a message needs its own fallback node; ProsperO's fallback nodes don't ask for anything, because a caller who's stuck often can't answer more questions.
 - *"A call can still stall without refusals,"* for example if the LLM keeps chatting and never calls a transition. That's a different failure, not counted here (gap 3).
 
 **Revisit when** a phone system allows real transfers, or real calls show misdetections reaching the fallback too often.

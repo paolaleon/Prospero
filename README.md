@@ -21,7 +21,7 @@ The reasoning behind the main design choices, and their known weaknesses, is in 
 - **Inspector:**
   - **Nodes:** rename (every reference follows), edit instructions, mark as the start or an end node, override the persona.
   - **Transitions:** function name, "when to take it" description, target, and the fields the LLM must collect (type, description, allowed values, required).
-  - **Agent:** name, persona, voice, languages (English only by default; callers in other languages are offered a call back) and model.
+  - **Agent:** name, persona, voice and model, plus where a stuck call goes (a node, or a polite ending). Agents speak English only.
 - **Live validation:** errors (red) and warnings (amber) are checked by the backend as you edit and pinned to the node or transition they belong to.
 - **Undo/redo** (⌘Z / ⇧⌘Z), with a readable label for every change.
 - **Versions:** each save is a new, immutable version with a message. History lists them, and any version can be restored.
@@ -43,7 +43,7 @@ The reasoning behind the main design choices, and their known weaknesses, is in 
   OPENAI_API_KEY=...
   ```
   Optional: `PROSPERO_MODEL` picks the OpenAI model ProsperO uses (default `gpt-5.5`), and `PROSPERO_REASONING` its reasoning effort (default `none`, which is faster with the same results in testing).
-  This file is gitignored. Voice, languages and model are set per agent, not here.
+  This file is gitignored. Voice and model are set per agent, not here.
 
 ## Quickstart
 
@@ -103,7 +103,6 @@ Served on `:7860` next to Pipecat's own call endpoints (`/start`, `/sessions/…
 | `GET /api/calls[?agent_id=…]`, `GET /api/calls/{id}` | Recorded calls |
 | `POST /api/validate` | Errors and warnings for a draft agent |
 | `GET /api/voices` | ElevenLabs voices for the voice picker |
-| `GET /api/languages` | Languages an agent can speak |
 | `POST /api/copilot` | One ProsperO turn: the current agent, the chat and a message in; edits streamed out as server-sent events |
 
 ## Agent format
