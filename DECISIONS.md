@@ -27,6 +27,7 @@ This file records the project's architectural decisions (ADs): decisions that ar
 | AD-13 | ProsperO is a stateless tool loop on the backend that edits through operations and can't finish with errors |
 | AD-14 | ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step |
 | AD-15 | The runtime manages a call's language: it detects every utterance, locks the call to the first allowed language, and takes no action on any other |
+| AD-16 | A call stuck in a node for two failures in a row is moved to a fallback by the runtime |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -497,12 +498,52 @@ languages per node (for example, a Spanish-only line).
 
 ---
 
+## AD-16: A call stuck in a node for two failures in a row is moved to a fallback by the runtime
+
+**Decision.** Guards that refuse (AD-10's required data, AD-15's language guard) could leave a call looping on the same node until the caller hung up. Now the runtime counts **consecutive failures in the current node** (`backend/agent_builder/builder.py`):
+- **refused transitions:** required data missing, a value not allowed, or the caller off-language;
+- **blocked utterances:** speech in a language the call doesn't use.
+
+The counts reset when the call moves to another node, and blocked utterances also reset when the caller speaks the call's language again. On the **second** failure in a row, the call is moved to the agent's **fallback**, without asking the LLM:
+- **The agent's own fallback node**, if `fallback_node` is set (in Agent settings, "When the call gets stuck", or by ProsperO, which gives medical agents a short "handoff to staff" end node).
+- **Otherwise a built-in polite ending:** the agent apologises in the call's language, says the clinic's staff can help directly, and ends the call.
+- **The fallback never falls back again,** so a stuck call can't loop.
+
+On a blocked utterance, the guard drops the words once the fallback is taken, so only the fallback speaks. Each fallback is a `fallback` event in the call record (from which node, why, to where), and counts as where the call ended. The fallback node is marked on the canvas, and validation counts it as reachable and checks that it exists. Rename and delete keep `fallback_node` up to date (shared test cases, AD-12).
+
+**Product argument.**
+- **No caller is left in a loop.** The worst experience on a voice line is hearing the same question again and again. After two misses, the call ends gracefully or goes where the clinic chose.
+- **The clinic decides the way out:** a polite ending by default, or its own node (a message for staff, the clinic's direct number).
+- **Stuck calls become data:** each fallback is recorded with the node and the reason, so the nodes where callers get stuck stand out.
+
+**AI angle.**
+- **Recovery doesn't depend on the LLM noticing it's stuck.** Counting and moving the call are plain code, the same every time. The LLM only says the fallback's lines.
+- **It closes the gap the hard guards opened.** Refusing to act on missing or off-language input is right, but on its own it fails the caller. A bounded number of retries plus a deterministic exit keeps the guards safe *and* usable.
+- **A Phase 2 signal:** repeated fallbacks from one node mean its instructions or required fields need work, which the copilot can target.
+
+**Alternatives considered.**
+- **Asking the LLM to give up when stuck** (a prompt rule). Rejected: that's the unreliable pattern AD-15 replaced.
+- **A global "talk to a human" transition** available in every node. Deferred: there's no phone system to transfer to yet; the fallback node can play that role once there is.
+- **A limit on turns per node** (stuck without any refusal, e.g. the LLM never calls a transition). Not covered yet; see gap 3.
+- **Three failures (or five)** before falling back. The user chose two: recover quickly.
+
+**Cost of reversal.** Low. The fallback is optional per agent, and removing the counter restores the previous behaviour.
+
+**Likely challenges.**
+- *"Two is strict: one misheard answer and one retry ends the call."* True, by choice. With language detection mistakes (AD-15), a caller speaking the right language can reach the fallback if two utterances in a row are misdetected. The limit is one constant (`FAILURE_LIMIT`) if it needs tuning.
+- *"The built-in ending can't take a message."* Correct. It only tells the caller how to get help. An agent that should take a message needs its own fallback node; but a node that asks for details can't help a caller who's off-language, which is why ProsperO's fallback nodes don't ask for anything.
+- *"A call can still stall without refusals,"* for example if the LLM keeps chatting and never calls a transition. That's a different failure, not counted here (gap 3).
+
+**Revisit when** a phone system allows real transfers, or real calls show misdetections reaching the fallback too often.
+
+---
+
 ## Gaps to prepare for
 
 These aren't decisions yet. They're the questions an AI product reviewer is most likely to ask.
 
 1. **Reviewing AI edits.** Versions and rollback exist (AD-4). Still missing is a visual diff of a proposed change on the canvas, with accept and reject, before it becomes a version.
 2. **Evaluations.** Calls are recorded (AD-7). Still missing are scripted test conversations with expected paths ("a caller who wants to cancel should reach `cancel_confirm`"), run after every change to catch regressions. (AD-3, AD-7)
-3. **Routing reliability.** Partly addressed: a transition missing required data, or with a value outside its allowed list, is refused and the LLM asks again (AD-10). Still missing: a fallback if the LLM never calls a function or picks the wrong edge, global edges available from every node (such as "talk to a human"), a limit on turns per node, and detecting plausible but invented values. (AD-2, AD-3, AD-10)
+3. **Routing reliability.** Partly addressed: a transition missing required data, or with a value outside its allowed list, is refused and the LLM asks again (AD-10), and after two failures in a row the call moves to a fallback (AD-16). Still missing: recovery when the LLM never calls a function or picks the wrong edge, global edges available from every node (such as "talk to a human"), a limit on turns per node, and detecting plausible but invented values. (AD-2, AD-3, AD-10)
 4. **Running arbitrary prompts on shared keys.** Sign-in, rate limits and per-user quotas before anything is deployed. (AD-5)
 5. **Patient data in transcripts and collected fields.** Encryption, retention limits, access controls and masking before real traffic. (AD-6, AD-7)
