@@ -142,27 +142,6 @@
       }
     },
     {
-      "name": "updateAgent can set the languages",
-      "agent": "clinic",
-      "op": {
-        "type": "updateAgent",
-        "patch": {
-          "languages": [
-            "en",
-            "es"
-          ]
-        }
-      },
-      "label": "Edited agent languages",
-      "expect": {
-        "languages": [
-          "en",
-          "es"
-        ],
-        "name": "Clinic"
-      }
-    },
-    {
       "name": "setInitialNode moves the start",
       "agent": "clinic",
       "op": {

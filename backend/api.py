@@ -11,7 +11,6 @@
 #   /api/calls[/{id}]                      recorded calls
 #   /api/validate                          structured errors/warnings for a draft agent
 #   /api/voices                            ElevenLabs voices for the voice picker
-#   /api/languages                         languages an agent can speak (AD-15)
 #   /api/copilot                           one ProsperO turn, streamed as server-sent events
 #
 # register_routes also installs the call guard (call_guard.py), which refuses
@@ -32,7 +31,6 @@ from pydantic import BaseModel
 import prospero
 import store
 from call_guard import StartValidationMiddleware
-from agent_builder.languages import SUPPORTED_LANGUAGES
 from http_common import http_error, issues_json
 
 # Used when the ElevenLabs voices API is unreachable, so the picker still works.
@@ -172,10 +170,6 @@ def register_routes(app: FastAPI) -> None:
     @app.post("/api/validate")
     async def validate(agent: dict):
         return {"issues": issues_json(agent)}
-
-    @app.get("/api/languages")
-    async def languages():
-        return [{"code": code, "name": name} for code, name in SUPPORTED_LANGUAGES.items()]
 
     voices_cache: dict = {"at": 0.0, "voices": None}
 

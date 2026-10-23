@@ -17,7 +17,7 @@ from typing import Awaitable, Callable, Optional, Union
 from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 
-from . import languages
+from .english import ENGLISH_ONLY_RULE
 from .schema import AgentConfig, Edge, Node
 from .validation import validate_agent
 
@@ -33,8 +33,8 @@ RefusalHook = Callable[[str, str, dict, list], Awaitable[None]]
 # Called when a stuck call is moved to its fallback: (from_node, reason, to_node).
 FallbackHook = Callable[[str, str, str], Awaitable[None]]
 
-# A call that fails this many times in a row in one node (refused transitions,
-# or utterances in a language the call doesn't use) goes to its fallback (AD-16).
+# A call whose transitions are refused this many times in a row in one node
+# goes to its fallback (AD-16).
 FAILURE_LIMIT = 2
 
 # Used when the agent has no fallback node of its own.
@@ -84,16 +84,10 @@ class AgentBuilder:
         # the first transition: `builder.on_transition = my_listener`.
         self.on_transition: Optional[TransitionHook] = None
         self.on_transition_refused: Optional[RefusalHook] = None
-        # Set by the runtime's language guard (AD-15): the call's locked-in
-        # language, and whether the caller's last words were in another one,
-        # in which case every transition is refused.
-        self.call_language: Optional[str] = None
-        self.language_blocked = False
         self.on_fallback: Optional[FallbackHook] = None
         # Where the call is, and how many times in a row it has failed there.
         self.current_node: Optional[str] = None
         self._refusals = 0
-        self._blocked = 0
         self._nodes_by_name = {n.name: n for n in config.nodes}
 
     # ---- loading -----------------------------------------------------------
@@ -132,12 +126,6 @@ class AgentBuilder:
             "post_actions": [{"type": "end_conversation"}],
         }
 
-    def note_utterance(self, blocked: bool) -> bool:
-        """Count the caller's utterances in a language the call doesn't use.
-        Returns True when the call should now go to its fallback."""
-        self._blocked = self._blocked + 1 if blocked else 0
-        return blocked and self._stuck(self._blocked)
-
     async def take_fallback(self, reason: str) -> NodeConfig:
         """Move the call's bookkeeping to the fallback and return its config."""
         from_node = self.current_node or ""
@@ -154,7 +142,6 @@ class AgentBuilder:
     def _enter(self, name: str) -> None:
         self.current_node = name
         self._refusals = 0
-        self._blocked = 0
 
     def _make_node(self, node: Node) -> NodeConfig:
         node_config: NodeConfig = {
@@ -173,28 +160,21 @@ class AgentBuilder:
         return node_config
 
     def _role_message(self, override: Optional[str]) -> str:
-        # The language rule is added to every node, so a node overriding the
-        # persona can't drop it (AD-15). It names the call's language once known.
-        return (
-            f"{override or self.config.persona}\n\n"
-            f"{languages.language_rule(self.config.languages, self.call_language)}"
-        ).strip()
+        # The English rule is added to every node, so a node overriding the
+        # persona can't drop it (AD-15).
+        return f"{override or self.config.persona}\n\n{ENGLISH_ONLY_RULE}".strip()
 
     def _make_edge_function(self, node: Node, edge: Edge) -> FlowsFunctionSchema:
         async def handler(args: dict, flow_manager: FlowManager):
-            if self.language_blocked:
-                problems = [languages.refusal(self.call_language, self.config.languages)]
-            else:
-                problems = check_args(edge, args)
+            problems = check_args(edge, args)
             if problems:
                 logger.info(f"[{edge.function}] refused in {node.name}: {problems} | args: {args}")
                 await _notify(self.on_transition_refused, node.name, edge.function, args, problems)
                 self._refusals += 1
                 if self._stuck(self._refusals):
                     # Stuck: stop asking and move the call on to its fallback.
-                    reason = "language" if self.language_blocked else "missing information"
                     error = " ".join(problems) + " The call can't continue here, so it moves on to wrap up."
-                    return {"status": "error", "error": error}, await self.take_fallback(reason)
+                    return {"status": "error", "error": error}, await self.take_fallback("missing information")
                 # Stay in this node. Returning no next node makes Flows hand this
                 # result straight back to the LLM, which can ask the caller again.
                 error = " ".join(problems) + " Ask the caller for it, then call this function again."

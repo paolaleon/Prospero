@@ -184,25 +184,6 @@ def test_a_new_rule_only_needs_a_decorator():
         validation._NODE_RULES.remove(node_names_are_snake_case)
 
 
-# ---- languages ---------------------------------------------------------------------
-def test_languages_are_optional():
-    assert issues(agent()) == set()  # English only by default
-
-
-@pytest.mark.parametrize("languages, message", [
-    ([], "Choose at least one language."),
-    ("en", "Choose at least one language."),
-    (["en", "xx"], "Unsupported language code(s): xx."),
-    (["en", "en"], "A language is listed twice."),
-])
-def test_languages_must_be_supported(languages, message):
-    assert ("error", message, None, None) in issues(agent(languages=languages))
-
-
-def test_supported_languages_pass():
-    assert issues(agent(languages=["en", "es", "zh"])) == set()
-
-
 # ---- fallback node (AD-16) -----------------------------------------------------------
 def test_fallback_node_must_exist():
     assert ("error", "Fallback node 'nope' is not a defined node.", None, None) in issues(agent(fallback_node="nope"))

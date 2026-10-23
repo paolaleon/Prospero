@@ -51,9 +51,8 @@ from pipecat_flows import FlowManager
 
 import api
 import store
-from agent_builder import AgentBuilder, languages
+from agent_builder import AgentBuilder
 from agent_builder.builder import BUILT_IN_FALLBACK
-from language_guard import LanguageGuard
 
 # Load .env next to this file, so the bot runs the same from the repo root or backend/.
 load_dotenv(Path(__file__).parent / ".env", override=True)
@@ -142,21 +141,14 @@ async def run_bot(
     config = builder.config
     logger.info(f"Starting '{config.name}' with {len(config.nodes)} nodes (call {recorder.call_id})")
 
-    # Speech-to-text detects the language of every utterance, so the language
-    # guard can keep the call in its language (AD-15). The voice starts in the
-    # agent's default language and follows the call's language once locked.
+    # Every agent speaks English (AD-15): speech in and out is fixed to it.
     stt = ElevenLabsRealtimeSTTService(
         api_key=os.environ["ELEVENLABS_API_KEY"],
-        settings=ElevenLabsRealtimeSTTService.Settings(language=None),
-        include_language_detection=True,
-        # With language detection, ElevenLabs sends each final transcript twice
-        # (with and without timestamps) and Pipecat only skips the plain one
-        # when timestamps are on; without this, every utterance reached the LLM twice.
-        include_timestamps=True,
+        settings=ElevenLabsRealtimeSTTService.Settings(language="en"),
     )
     tts = ElevenLabsTTSService(
         api_key=os.environ["ELEVENLABS_API_KEY"],
-        settings=ElevenLabsTTSService.Settings(voice=config.voice_id, language=config.languages[0]),
+        settings=ElevenLabsTTSService.Settings(voice=config.voice_id, language="en"),
     )
     llm = OpenAILLMService(api_key=os.environ["OPENAI_API_KEY"], model=config.model)
 
@@ -171,24 +163,6 @@ async def run_bot(
     async def on_transition(from_node: str, function: str, to_node: str, args: dict) -> None:
         await notify_event(recorder.transition(from_node, function, to_node, args))
         await notify_node(to_node, from_node=from_node, function=function, args=args)
-
-    async def on_language(action: str, language, text: str) -> bool:
-        # "locked": the call now continues in `language`; "blocked": the caller
-        # spoke a language the call doesn't use, and their words weren't passed on.
-        await notify_event(recorder.add("language", action=action, language=language, text=text))
-        if action == "blocked" and builder.note_utterance(blocked=True):
-            # Stuck on language: move to the fallback, which speaks instead (AD-16).
-            await flow_manager.set_node_from_config(await builder.take_fallback("language"))
-            return True
-        return False
-
-    def follow_guard(guard: LanguageGuard) -> None:
-        builder.call_language = guard.call_language
-        builder.language_blocked = guard.blocked
-        if not guard.blocked:
-            builder.note_utterance(blocked=False)
-
-    language_guard = LanguageGuard(config.languages, on_event=on_language, on_change=follow_guard)
 
     async def on_transition_refused(node: str, function: str, args: dict, problems: list) -> None:
         await notify_event(recorder.refusal(node, function, args, problems))
@@ -213,7 +187,6 @@ async def run_bot(
         [
             transport.input(),
             stt,
-            language_guard,
             context_aggregator.user(),
             llm,
             tts,
@@ -237,11 +210,8 @@ async def run_bot(
 
     @context_aggregator.user().event_handler("on_user_turn_message_added")
     async def on_user_message(aggregator, message):
-        # The language guard's notes are recorded as their own events, not as
-        # something the caller said.
-        text = languages.without_notes(message.content or "")
-        if text:
-            await notify_event(recorder.add("user", text=text))
+        if message.content:
+            await notify_event(recorder.add("user", text=message.content))
 
     @context_aggregator.assistant().event_handler("on_assistant_turn_stopped")
     async def on_assistant_turn(aggregator, message):

@@ -123,40 +123,29 @@ def test_a_failing_refusal_listener_does_not_break_the_call():
 
 
 
-# ---- languages (AD-15) ------------------------------------------------------------
+# ---- English only (AD-15) ----------------------------------------------------------
 def role_message(builder, data, node_index=0):
     return builder._make_node(builder._nodes_by_name[data["nodes"][node_index]["name"]])["role_message"]
 
 
-def test_every_node_gets_the_english_only_rule_by_default():
+def test_every_node_gets_the_english_only_rule():
     data = json.loads(EXAMPLE.read_text())
     message = role_message(AgentBuilder.from_dict(data), data)
     assert message.startswith(data["persona"])
-    assert "Language: speak only English." in message
+    assert "Language: speak only English" in message
 
 
-def test_a_persona_override_keeps_the_language_rule():
+def test_a_persona_override_keeps_the_english_rule():
     data = json.loads(EXAMPLE.read_text())
     data["nodes"][1]["role_message"] = "Be extra brief."
     message = role_message(AgentBuilder.from_dict(data), data, 1)
     assert message.startswith("Be extra brief.") and "speak only English" in message
 
 
-def test_nodes_built_after_the_lock_name_the_call_language():
+def test_old_agents_with_a_languages_list_still_load():
     data = json.loads(EXAMPLE.read_text())
-    data["languages"] = ["en", "es"]
-    builder = AgentBuilder.from_dict(data)
-    assert "can also speak Spanish" in role_message(builder, data)
-    builder.call_language = "es"
-    assert "Language: speak only Spanish." in role_message(builder, data)
-
-
-def test_transitions_are_refused_while_the_caller_is_blocked():
-    builder = AgentBuilder.from_json(EXAMPLE)
-    builder.language_blocked = True
-    result, next_node, state = take_first_transition(builder, {"intent": "book"})
-    assert next_node is None and state == {}
-    assert result["error"].startswith("The caller isn't speaking English, so no action can be taken.")
+    data["languages"] = ["en", "es"]  # ignored: agents are English only
+    assert "speak only English" in role_message(AgentBuilder.from_dict(data), data)
 
 
 # ---- recovering from a stuck node (AD-16) ----------------------------------------
@@ -208,23 +197,20 @@ def test_progress_resets_the_count():
     assert builder.current_node == "offer_times" and builder._refusals == 0
 
 
-def test_language_blocks_count_in_a_row_and_reset_on_the_call_language():
-    builder, _, _ = stuck_builder()
-    assert builder.note_utterance(blocked=True) is False
-    assert builder.note_utterance(blocked=False) is False  # back in the call's language
-    assert builder.note_utterance(blocked=True) is False
-    assert builder.note_utterance(blocked=True) is True  # two in a row
-
-
 def test_a_call_never_falls_back_from_its_fallback():
+    builder, attempt, fallbacks = stuck_builder(fallback_node="offer_times")
+    attempt({})
+    _, fallback = attempt({})  # stuck: moved to offer_times, the fallback
+    assert fallback["name"] == "offer_times" and builder.current_node == "offer_times"
+
+    # Refusals inside the fallback keep asking instead of falling back again.
+    in_fallback = fallback["functions"][0].handler
+    for _ in range(3):
+        _, next_node = asyncio.run(in_fallback({}, SimpleNamespace(state={})))
+        assert next_node is None
+    assert len(fallbacks) == 1
+
+
+def test_the_built_in_ending_speaks_english():
     builder, _, _ = stuck_builder()
-    asyncio.run(builder.take_fallback("language"))
-    assert builder.current_node == BUILT_IN_FALLBACK
-    builder.note_utterance(blocked=True)
-    assert builder.note_utterance(blocked=True) is False
-
-
-def test_the_built_in_ending_speaks_the_calls_language():
-    builder, _, _ = stuck_builder(languages=["en", "es"])
-    builder.call_language = "es"
-    assert "speak only Spanish" in builder.fallback_node_config()["role_message"]
+    assert "speak only English" in builder.fallback_node_config()["role_message"]
