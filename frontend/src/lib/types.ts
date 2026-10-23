@@ -96,6 +96,15 @@ export type CallEvent =
       args: Record<string, unknown>;
     }
   | {
+      // The call locked to a language, or the caller spoke one the call doesn't use
+      // (their words weren't passed to the LLM). See AD-15.
+      t: string;
+      type: "language";
+      action: "locked" | "blocked";
+      language: string | null;
+      text: string;
+    }
+  | {
       // The LLM tried a transition without the data it requires; the call stayed put.
       t: string;
       type: "refused";

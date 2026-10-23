@@ -205,8 +205,8 @@ function LanguagesPicker({ agent }: { agent: Agent }) {
       <p className="mt-1 text-xs text-slate-500">
         {languages.length === 1
           ? `Callers are answered in ${name(languages[0])} only.`
-          : `Starts in ${name(languages[0])} and offers ${languages.slice(1).map(name).join(", ")}.`}{" "}
-        Callers in other languages are offered a call back from staff.
+          : `Starts in ${name(languages[0])} and mentions ${languages.slice(1).map(name).join(", ")}; the first of these the caller speaks is kept for the whole call.`}{" "}
+        Anything said in another language isn't passed to the agent, and no action is taken on it.
       </p>
     </div>
   );
