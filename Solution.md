@@ -623,8 +623,8 @@ ProsperO's prompt no longer asks the persona to say it; it only tells ProsperO n
 
 **Decision.** Any recorded call can be saved as a **test** of its agent (`backend/regression/`, stored in `agents/{id}/tests/`, a Tests tab in the editor). A test is:
 - **What the caller said**, in order, taken from the call and editable.
-- **Expectations, checked in code:** the node the call should end at, and the fields it should collect. They start as what happened on the call.
-- **Checks on what the agent says, judged by a grader model:** sentences like "Offers to book an appointment". The no-medical-advice check (D-17) is **always** added.
+- **Expectations, checked in code:** the node the call should end at and the fields it should collect, which start as what happened on the call. Also: the call **never falls back** (D-16), **no reply is longer than 40 words**, and it's **done within the original call's turns plus 2**. Each can be changed or switched off per test.
+- **Checks on what the agent says, judged by a grader model:** sentences like "Offers to book an appointment". Two are **always** added: **no medical advice** (D-17), and **nothing shared about other patients** (whether someone is a patient, their appointments or details, even for a relative).
 
 A run **replays** the caller's turns as text through the same `AgentBuilder` graph, Pipecat Flows runtime and LLM as a voice call, without speech. Each caller turn is sent once the agent has finished answering, transitions included. The same record a call produces (D-7) comes out, and the expectations are checked against it. Each test is replayed **3 times** (up to 5) and reports how many passed. Tests run against the latest version, the unsaved draft, or ProsperO's proposal, like test calls (D-5). An agent with errors doesn't run. The latest score is kept on the test.
 
@@ -637,7 +637,7 @@ The grader is a separate model call **after** the replay, with a fixed rubric. I
 
 **AI angle.**
 - **LLMs vary, so one pass proves little.** Repeating each replay and reporting a pass rate (3/3, 2/3) shows flakiness instead of hiding it.
-- **Plain code where possible, a model only where judgement is needed.** Where the call ended and what it collected are facts in the record. "Did it give advice?" isn't, so a grader judges it.
+- **Plain code where possible, a model only where judgement is needed.** Where the call ended, what it collected, whether it fell back, how long the replies were and how many turns it took are facts in the record, checked exactly and for free. "Did it give advice?" or "did it reveal another patient's appointment?" isn't, so a grader judges it.
 - **The grader is safe where a call-time judge wasn't.** Judging in a call (like the language detection that was removed, D-15) can break a real conversation when wrong. A grader runs offline: a wrong verdict only flags a test for a person, and its quoted evidence makes that quick.
 - **It tests the real thing.** Replays use the production graph builder, guards (D-10, D-16, D-17) and Flows runtime, not a re-implementation, so they can't drift from what calls run.
 - **The groundwork for ProsperO iterating from data:** failing tests, with evidence, are exactly the input a copilot needs to propose a fix, and the pass rate is how to tell whether its fix worked.
@@ -654,6 +654,8 @@ The grader is a separate model call **after** the replay, with a fixed rubric. I
 **Likely challenges.**
 - *"Scripted turns break when the agent changes its questions."* Yes. If the agent now asks for the date of birth first, the caller's recorded answer may not fit. The test then fails or ends early (the run reports unused turns), and the turns can be edited. That's the trade for reproducibility.
 - *"The grader can be wrong."* It can. It's told to quote evidence, uses a fixed rubric, and fails a check it can't judge. A test failing on a false verdict costs a look, not a caller.
+- *"The always-on checks pass on calls where the situation never comes up."* True: a booking call where nobody asks for advice, or about someone else, passes them trivially. They only test the behaviour on calls that provoke it, like the saved toothache call. A built-in set of provoking scenarios for every agent would close that.
+- *"Agents can't see other patients' records, so why check privacy?"* Because the risk is the model inventing an answer ("yes, he's booked for Tuesday"), which is as harmful to the clinic as a real leak.
 - *"Text replays skip the voice."* They do. Misheard speech, interruptions and timing are out of scope, and test calls remain the way to check those.
 - *"Cost and time."* Each replay is a few LLM calls plus one grader call; the 3 replays of a 3-turn call run side by side in about 10 to 20 seconds. At most 6 run at once to stay within rate limits.
 
