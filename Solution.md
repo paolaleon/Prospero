@@ -49,7 +49,7 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 
 **Likely challenges.**
 - *"You've mixed editor data into your runtime config."* True, but it's optional and the runtime ignores it. The agent format is the product's artifact, not just the runtime's input.
-- *"The copilot will waste tokens on coordinates, or move nodes around."* Remove positions before sending an agent to the LLM, add them back to unchanged nodes afterwards, and lay out new nodes automatically.
+- *"The copilot will waste tokens on coordinates, or move nodes around."* It doesn't: ProsperO receives the agent without positions and can't set them (D-13), and the editor lays the graph out automatically after its edits (D-14).
 
 **Revisit when** a second client needs a different layout (for example a mobile view), or the copilot's token budget gets tight.
 
@@ -57,14 +57,14 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 
 ### D-2: Validation rules live in one place, in the backend
 
-**Decision.** `validate_agent` is the only copy of the rules. The editor (`/api/validate`), the call request (`POST /start`, see D-5) and every way of creating an `AgentBuilder` all use it. Each issue says how serious it is and which node and edge it belongs to.
+**Decision.** `validate_agent` is the only copy of the rules. The editor (`/api/validate`), the call request (`POST /start`, see D-5), every way of creating an `AgentBuilder`, ProsperO (D-13) and test runs (D-18) all use it. Each issue says how serious it is and which node and edge it belongs to.
 
 **Product argument.** The editor and the runtime can't disagree. If the canvas shows no errors, the call will build. The issues point at a specific node and edge, so the UI can mark the exact problem on the graph instead of showing a vague "invalid agent".
 
 **AI angle.** This is the strongest decision for Phase 2.
-- **Generate → validate → repair.** The copilot's output is checked against the same rules as a human's edits, and the errors are machine-readable and specific ("Transition `select_time` targets unknown node `confirmation`"). They can go straight back to the LLM so it fixes its own output. The repair loop is ready before Phase 2 starts.
+- **Generate → validate → repair.** The copilot's output is checked against the same rules as a human's edits, and the errors are machine-readable and specific ("Transition `select_time` targets unknown node `confirmation`"). They go straight back to the LLM so it fixes its own output: ProsperO validates as it builds and can't finish while errors remain (D-13).
 - **Rules written for LLM behaviour.** A transition with no description is an *error*, not a warning, because the description is the only thing the LLM uses to decide when to take that edge. Function names must follow OpenAI's tool-name rules, which would otherwise fail at call time rather than at edit time.
-- **Errors and warnings are separate.** Errors block a run. Warnings (unreachable nodes, dead ends, no reachable end node) are likely design mistakes that still run, so users and the copilot can work through a half-built graph.
+- **Errors and warnings are separate.** Errors block a run. Warnings (unreachable nodes, dead ends, no reachable end node, nodes without instructions) are likely design mistakes that still run, so users and the copilot can work through a half-built graph.
 
 **Alternatives considered.**
 - Re-implementing the rules in TypeScript for instant feedback. Rejected because two copies drift apart.
@@ -76,8 +76,8 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 **Likely challenges.**
 - *"A round trip to the server on every edit is slow."* It runs locally, is debounced, and is a pure function that takes microseconds. If it ever mattered, the same Python could run in the browser, but it hasn't been needed.
 - *"Can something unvalidated still be compiled?"* No. The `AgentBuilder` constructor validates, so creating a builder directly from an `AgentConfig` is covered as well as `from_dict` and `from_json`. `from_dict` also checks the raw dict first, so a missing key gives a readable error instead of a `KeyError`.
-- *"It doesn't check `pre_actions` / `post_actions`."* True. They're passed through to Pipecat unchecked, and the editor won't expose them beyond raw JSON.
-- *"It checks structure, not quality."* Correct. A valid agent can still be a bad conversation. That's what evaluations are for (see Gaps).
+- *"It doesn't check `pre_actions` / `post_actions`."* True. They're passed through to Pipecat unchecked, and the editor only offers them as raw JSON, in an advanced section of the node.
+- *"It checks structure, not quality."* Correct. A valid agent can still be a bad conversation. That's what regression tests are for (D-18).
 
 **Revisit when** you add new kinds of nodes or edges (conditional edges, tool-call nodes), or the copilot needs quality checks such as "this prompt is too long to read aloud".
 
@@ -85,7 +85,12 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 
 ### D-3: `AgentBuilder` reports transitions through a callback
 
-**Decision.** `AgentBuilder` has an optional `on_transition` attribute: an async `(from_node, function, to_node, args)` listener. It's called each time a transition is taken, just before the next node starts. Whoever runs the call assigns it (`builder.on_transition = listener`), because the listener usually needs objects that only exist once the call has started; `bot.py` gives each call its own, bound to that call's recorder. If it fails, the error is logged and the call carries on.
+**Decision.** `AgentBuilder` reports what happens in the graph through optional async listeners:
+- `on_transition(from_node, function, to_node, args)`: a transition was taken, just before the next node starts;
+- `on_transition_refused(node, function, args, problems)`: a transition was refused for missing or invalid data (D-10);
+- `on_fallback(from_node, reason, to_node)`: a stuck call was moved to its fallback (D-16).
+
+Whoever runs the call assigns them (`builder.on_transition = listener`), because they usually need objects that only exist once the call has started. `bot.py` binds each call's listeners to its recorder (D-7) and to the live view (D-6); test replays bind them to the replay's record (D-18). If a listener fails, the error is logged and the call carries on.
 
 **Product argument.** Users can see where the conversation is in the graph as it happens. The builder doesn't know who's listening, so the same hook can later feed call logs, analytics or alerts without changes to the builder.
 
@@ -98,10 +103,10 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 **Cost of reversal.** Low. It's one optional parameter.
 
 **Likely challenges.**
-- *"Only the live UI uses it."* That's deliberate. Storing call logs later is purely additive.
-- *"It runs inside the transition, so a slow listener slows the call down."* True. Anything heavier than sending a message should go on a queue instead of being awaited inside the transition.
+- *"Why not one generic event listener?"* Three typed listeners keep each event's data explicit and checked; adding call records, refusals and fallbacks needed no change to how the builder is used.
+- *"It runs inside the transition, so a slow listener slows the call down."* True. Today's listeners only append to a record and send a message. Anything heavier should go on a queue instead of being awaited inside the transition.
 
-**Revisit when** you add call logs (put a queue in front) or more node types (it may need to report more than transitions).
+**Revisit when** listeners need to do heavier work (put a queue in front), or new kinds of nodes need to report more than these three events.
 
 ---
 
@@ -130,7 +135,7 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 **Likely challenges.**
 - *"Every save keeps a full copy. Won't that grow without limit?"* An agent is a few KB, so thousands of versions are a few MB. Diffs between versions are computed on demand rather than stored.
 - *"There are no tenants, no sign-in, no permissions."* Out of scope for Phase 1. It would come with the move to a database.
-- *"Deleting an agent deletes its history."* True, and deliberate for a dev tool. A production system would archive instead.
+- *"Deleting an agent deletes its history."* True (its versions and its tests, D-18), and deliberate for a dev tool. A production system would archive instead.
 
 **Revisit when** you need to tell production traffic apart from work in progress (add a published pointer), or you host it for more than one team (database and tenants).
 
@@ -265,7 +270,7 @@ The record is written by `CallRecorder` (`backend/call_record.py`) on the server
 
 **Product argument.** Each side can be built, deployed and changed without touching the other. The UI ships as static files to any host, and the voice backend scales with the number of calls, not with editor traffic.
 
-**AI angle.** Because the API is the only way in, the Phase 2 copilot gets the same capabilities a human has: it can run as a backend service, a CLI or an MCP tool and call `/api/agents`, `/api/validate` and `/api/calls` directly. Nothing the copilot needs is hidden inside the UI.
+**AI angle.** Nothing the copilot needs is hidden inside the UI. ProsperO runs on the backend behind one more endpoint (`/api/copilot`, D-13), and the editor reaches it like everything else. Other clients, such as a CLI or an MCP tool, could drive agents, calls and tests through the same API.
 
 **Alternatives considered.**
 - Having the backend serve the built frontend. Rejected because it ties backend releases to frontend builds.
@@ -275,7 +280,7 @@ The record is written by `CallRecorder` (`backend/call_record.py`) on the server
 **Cost of reversal.** Low to medium. Serving `frontend/dist` from the backend would take a few lines, but undoing the separation would mean merging two release cycles.
 
 **Likely challenges.**
-- *"Two processes to run in development."* True. Each is one command: `npm run dev` in `frontend/` and `python bot.py` in `backend/`.
+- *"Two processes to run in development."* True, but `make dev` starts both, and Ctrl+C stops both.
 - *"`allow_origins=*` is permissive."* True, and it's the runner's default. A deployment should restrict it to the editor's origin with the runner's `--allowed-origins` option.
 
 **Revisit when** the editor is deployed (restrict origins, add sign-in).
@@ -284,7 +289,7 @@ The record is written by `CallRecorder` (`backend/call_record.py`) on the server
 
 ### D-9: Every edit to an agent is a named, serialisable operation
 
-**Decision.** The editor's draft only changes through `applyOp(agent, op)` in `frontend/src/lib/operations/`. That function is pure and is the single place where an agent is modified. An `Op` is plain data: `addNode`, `renameNode`, `updateEdge`, `moveNodes` and so on, each with a readable label from `describeOp`. The canvas, the inspector, JSON import and undo/redo all dispatch operations through the store (`frontend/src/lib/store.ts`). Operations whose meaning spans the graph handle every reference: renaming a node rewrites the start node and every edge that targets it, and deleting a node keeps the transitions that pointed at it but clears their target, so validation flags each one.
+**Decision.** The editor's draft only changes through `applyOp(agent, op)` in `frontend/src/lib/operations/`. That function is pure and is the single place where an agent is modified. An `Op` is plain data: `addNode`, `renameNode`, `updateEdge`, `moveNodes` and so on, each with a readable label from `describeOp`. The canvas, the inspector and undo/redo all dispatch operations through the store (`frontend/src/lib/store.ts`), and ProsperO's proposals are built with the same operations (D-12, D-14). Operations whose meaning spans the graph handle every reference: renaming a node rewrites the start node, the fallback node and every edge that targets it, and deleting a node keeps the transitions that pointed at it but clears their target, so validation flags each one.
 
 **Product argument.**
 - One undo/redo history, with readable labels, covers every kind of edit.
@@ -292,8 +297,8 @@ The record is written by `CallRecorder` (`backend/call_record.py`) on the server
 - No part of the UI can leave the graph inconsistent, for example a rename that breaks the edges pointing at a node.
 
 **AI angle.** This is how the copilot plugs into the editor.
-- **One vocabulary for people and the AI.** The copilot doesn't return a whole new JSON for the agent; it proposes a list of operations ("rename `offer_times` to `offer_slots`", "edit the description of `select_time`"). Small, targeted edits are easier for an LLM to get right than regenerating the whole document, and a reviewer can read them.
-- **Reviewable by construction.** A proposal is a list of labelled operations that can be previewed on the canvas, then accepted or rejected one by one. It becomes a version with `source: "copilot"` (D-4).
+- **One vocabulary for people and the AI.** ProsperO doesn't return a whole new JSON for the agent; it makes a list of operations ("rename `offer_times` to `offer_slots`", "edit the description of `select_time`"). Small, targeted edits are easier for an LLM to get right than regenerating the whole document, and a reviewer can read them.
+- **Reviewable by construction.** A proposal is a list of labelled operations, previewed on the canvas and accepted or rejected as a whole (D-14). It becomes a version with `source: "copilot"` (D-4).
 - **Safe to apply.** `applyOp` refuses operations that don't fit the agent (an unknown node, a name collision), so a hallucinated edit fails loudly instead of corrupting the graph. Validation (D-2) then catches anything that's structurally wrong.
 
 **Alternatives considered.**
@@ -301,13 +306,13 @@ The record is written by `CallRecorder` (`backend/call_record.py`) on the server
 - JSON Patch (RFC 6902). Rejected as the main vocabulary because paths like `/nodes/3/edges/1` mean nothing to a reviewer and break when nodes move. Patches could still be produced from operations if needed.
 - Having the copilot regenerate the whole agent JSON. Rejected because it costs more tokens, drifts unpredictably, and is hard to review.
 
-**Cost of reversal.** High once the copilot exists. Its tool definitions would be these operations.
+**Cost of reversal.** High. ProsperO's tools are these operations (D-13), and both the editor and ProsperO depend on them.
 
 **Likely challenges.**
 - *"Can the backend use the operations too?"* Yes, since D-12: the same operations exist in Python, and both implementations are held to the same shared test cases. ProsperO applies them on the backend.
 - *"Undo history is lost on reload."* True. It's per session. Versions (D-4) are the long-term history.
 
-**Revisit when** you build the copilot's tool interface (decide where `applyOp` runs), or need edits from several people at once (operations are the basis for merging).
+**Revisit when** several people need to edit at once (operations are the basis for merging), or proposals need partial acceptance (operations are the unit to accept).
 
 ---
 
@@ -367,7 +372,7 @@ An AI copilot that builds and edits medical voice agents from prompts, plus the 
 
 ### D-11: ProsperO, the copilot, specialises in voice agents for the medical field
 
-**Decision.** ProsperO, the Phase 2 copilot that builds and edits agents from natural-language prompts, is designed for **voice agents used by medical practices**: clinics and practices handling scheduling, rescheduling and cancellations, patient intake, reminders, prescription refill requests, billing questions, and routing urgent calls. It's being built on the `phase-2-copilot` branch, and this decision shapes it from the start.
+**Decision.** ProsperO, the Phase 2 copilot that builds and edits agents from natural-language prompts, is designed for **voice agents used by medical practices**: clinics and practices handling scheduling, rescheduling and cancellations, patient intake, reminders, prescription refill requests, billing questions, and routing urgent calls. It was decided before ProsperO was built and shaped it from the start.
 
 The domain shows up in what ProsperO does by default when it builds an agent:
 - **Identity before details:** verify the caller (e.g. full name and date of birth) before discussing an existing appointment or record.
@@ -384,7 +389,7 @@ The domain shows up in what ProsperO does by default when it builds an agent:
 **AI angle.**
 - **A narrower domain makes the LLM more reliable.** The system prompt can carry a concrete checklist, real examples of good clinic flows, and domain vocabulary, instead of generic advice. That improves first drafts more than a larger model would.
 - **Safety-critical behaviour shouldn't depend on the user remembering to ask for it.** Emergency escalation and refusing medical advice are built in by default, and can later be checked by validation rules. For example: "no emergency path reachable from the start node" as a warning, using the rule registry from D-2.
-- **Evaluation gets concrete.** Test scenarios for Phase 2's regression tests (a new patient booking, a caller describing chest pain, a refill request) come from a known set of call types.
+- **Evaluation gets concrete.** Regression tests (D-18) cover a known set of call types: a new patient booking, a caller describing chest pain, a refill request.
 
 **Alternatives considered.**
 - **A general-purpose copilot** for any kind of voice agent. Rejected: the defaults would be weaker exactly where mistakes are most costly, and nothing would distinguish it from generic builders.
@@ -395,7 +400,7 @@ The domain shows up in what ProsperO does by default when it builds an agent:
 
 **Likely challenges.**
 - *"Is a prompt enough for compliance?"* No. Defaults in the prompt make agents behave more safely, but compliance with regulations such as HIPAA also needs agreements with vendors, encryption, access controls and retention policies (gap 5). ProsperO makes better agents; it doesn't make the platform compliant.
-- *"What if the LLM drops a safety default while editing?"* Possible, since prompt guidance isn't enforcement. Validation rules for the critical defaults would catch it on every edit, by a person or by ProsperO. That's the planned backstop.
+- *"What if the LLM drops a safety default while editing?"* For medical advice, it can't: the runtime adds that rule to every node (D-17). The other defaults (an emergency path, identity checks) are prompt guidance, not enforcement. Validation rules for them would catch a missing one on every edit, by a person or by ProsperO; they're the planned backstop.
 - *"What about a client outside medicine?"* ProsperO can still build their agent, but its defaults will assume a medical practice and need overriding. Domain packs are the answer if that becomes common.
 - *"Medical knowledge varies by country and specialty."* True, so ProsperO should ask about specifics that matter (e.g. the local emergency number, after-hours policy) rather than assume them.
 
@@ -407,7 +412,7 @@ The domain shows up in what ProsperO does by default when it builds an agent:
 
 **Decision.** The operations from D-9 now have two implementations:
 - **TypeScript** (`frontend/src/lib/operations/`), which the editor uses for people's edits, undo/redo and previews;
-- **Python** (`backend/agent_builder/operations/`), which ProsperO will use on the backend to build and edit agents.
+- **Python** (`backend/agent_builder/operations/`), which ProsperO uses on the backend to build and edit agents (D-13).
 
 Both are organised the same way: one entry per operation, in a file per area (`agent`, `node`, `edge`), holding how it's applied and how it's labelled. The Python entry also holds the operation's JSON schema, which ProsperO's tool definitions are built from. In TypeScript, a mapped type makes the build fail if any operation lacks an entry. Operations are the same plain JSON in both languages, so an operation produced on the backend can be applied unchanged in the browser.
 
@@ -453,7 +458,7 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 - **Small edits instead of one big document.** Producing many small, checked edits is more reliable for an LLM than writing a whole JSON agent in one go, and each mistake is caught at the edit that made it.
 - **Self-correction with precise feedback.** Refused edits and validation results come back as exact messages ("No node named 'verify_patient'."), so the model fixes its own errors within the turn.
 - **The agent the LLM sees is the real one.** It gets the current agent, without canvas positions, on every turn, so edits in a later turn ("add a cancellation path") apply to what's really there, including the user's own changes.
-- **The LLM is swappable.** The loop takes the LLM call as a function. Tests drive it with a scripted fake (12 tests, no cost, deterministic), and changing provider or model touches one function.
+- **The LLM is swappable.** The loop takes the LLM call as a function. Tests drive it with a scripted fake (15 tests, no cost, deterministic), and changing provider or model touches one function.
 
 **Alternatives considered.**
 - **Generating the whole agent JSON in one structured response.** Rejected: no live drawing, harder to review, and one mistake means regenerating everything.
@@ -467,9 +472,9 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 - *"It's slow."* Measured on the same prompt: `gpt-5.5` with default reasoning took about 30 seconds, with the first edits after about 15. With reasoning off (now the default, `PROSPERO_REASONING=none`), the first edits arrive after about 9 seconds and a build takes 23 to 29 seconds, with the same validity and medical defaults. Most of the time is spent writing out the edits (about 1,000 tokens per reply), not thinking. The loop streams replies and applies each tool call as soon as it's complete, but OpenAI delivers `gpt-5.5`'s tool calls all at the end of a reply, on both its APIs, so edits still arrive in bursts. `gpt-4.1` streams small replies and draws continuously from about 2 seconds (21 seconds per build, all checks passed on one prompt), but it's a less capable model; it remains available through `PROSPERO_MODEL`. `gpt-5.4-mini` was faster still but stopped before finishing. The editor plays bursts onto the canvas one edit at a time and shows what ProsperO is doing, so the wait is visible rather than silent.
 - *"Valid isn't the same as good."* True. Validation guarantees the agent runs, not that it handles callers well. The medical defaults in the prompt help; regression tests from recorded calls (D-18) are the real measure.
 - *"Anyone who reaches the endpoint spends your OpenAI credit."* As with test calls (D-5), fine locally; a deployment needs sign-in and rate limits.
-- *"The model could ignore the medical defaults."* It followed them in the first real build, but nothing enforces them yet. Medical validation rules (D-11) are the planned backstop.
+- *"The model could ignore the medical defaults."* It followed them in real builds. The no-medical-advice rule no longer depends on it: the runtime adds it to every node (D-17). The emergency path and identity checks still do; medical validation rules (D-11) are the planned backstop.
 
-**Revisit when** turns get slow enough to hurt the experience (stream the LLM's output), conversations get long (summarise history), or several people work on one agent (server-side sessions).
+**Revisit when** turns get slow enough to hurt the experience (a faster model, or fewer edits per build), conversations get long (summarise history), or several people work on one agent (server-side sessions).
 
 ---
 
@@ -577,7 +582,7 @@ Each fallback is a `fallback` event in the call record (from which node, why, to
 - *"The built-in ending can't take a message."* Correct. It only tells the caller how to get help. An agent that should take a message needs its own fallback node; ProsperO's fallback nodes don't ask for anything, because a caller who's stuck often can't answer more questions.
 - *"A call can still stall without refusals,"* for example if the LLM keeps chatting and never calls a transition. That's a different failure, not counted here (gap 3).
 
-**Revisit when** a phone system allows real transfers, or real calls show misdetections reaching the fallback too often.
+**Revisit when** a phone system allows real transfers, or real calls reach the fallback too often (tune `FAILURE_LIMIT`, or improve the node's instructions).
 
 ---
 
@@ -606,7 +611,7 @@ ProsperO's prompt no longer asks the persona to say it; it only tells ProsperO n
 **Cost of reversal.** Low. It's one constant and one line in the builder.
 
 **Likely challenges.**
-- *"A prompt can still be jailbroken."* Yes. This is the first layer; it fixes the common case (an agent that was never told). Recorded calls and a future output check are the next layers.
+- *"A prompt can still be jailbroken."* Yes. This is the first layer; it fixes the common case (an agent that was never told). Regression tests, which always check for advice (D-18), and a future output check are the next layers.
 - *"Some clinics want to share opening hours, prep instructions, or 'bring your insurance card'."* That's not medical advice, and the rule doesn't forbid it. Pre-visit instructions a clinic writes in a node are its own content, not the agent's judgement.
 - *"Why not let the LLM decide what counts as advice?"* It does, inside the rule. The runtime only guarantees the rule is there.
 
@@ -675,7 +680,7 @@ Records store **usage, not money**. The API works out the estimated cost when a 
 **AI angle.**
 - **Usage comes from the providers' own reports** (token counts in OpenAI's responses, characters sent to ElevenLabs), not from estimates. It's what the bill is based on.
 - **Input tokens grow with every turn,** because each model call resends the conversation, so long calls cost more per turn. Cached tokens are recorded separately because they're cheaper.
-- **Copilot and test costs are visible too:** a test run reports its replays and grading, so evaluation isn't a hidden cost.
+- **Test costs are visible too:** a test run reports its replays and grading, so evaluation isn't a hidden cost. ProsperO's own model use isn't metered yet.
 
 **Alternatives considered.**
 - **Storing the cost in the record.** Rejected: prices change and depend on the plan. Usage is a fact about the call; the price is an assumption that should be updatable.
@@ -698,7 +703,7 @@ Records store **usage, not money**. The API works out the estimated cost when a 
 
 These aren't decisions yet. They're the questions an AI product reviewer is most likely to ask.
 
-1. **Reviewing AI edits.** Versions and rollback exist (D-4). Still missing is a visual diff of a proposed change on the canvas, with accept and reject, before it becomes a version.
+1. **Reviewing AI edits.** Mostly addressed: ProsperO's changes are a proposal marked on the canvas, accepted or rejected before they become a version (D-14), with rollback (D-4). Still missing: showing removed transitions, and accepting part of a proposal. (D-4, D-14)
 2. **Evaluations.** Partly addressed: recorded calls can be saved as tests and replayed against any change (D-18). Still missing: running them automatically (on save, or before accepting a ProsperO proposal), a simulated caller for conversations that branch, tests of the voice layer, and ProsperO reading failing tests to propose fixes. (D-3, D-7, D-18)
 3. **Routing reliability.** Partly addressed: a transition missing required data, or with a value outside its allowed list, is refused and the LLM asks again (D-10), and after two failures in a row the call moves to a fallback (D-16). Still missing: recovery when the LLM never calls a function or picks the wrong edge, global edges available from every node (such as "talk to a human"), a limit on turns per node, and detecting plausible but invented values. (D-2, D-3, D-10)
 4. **Running arbitrary prompts on shared keys.** Sign-in, rate limits and per-user quotas before anything is deployed. (D-5)
