@@ -30,6 +30,7 @@ This file records the project's architectural decisions (ADs): decisions that ar
 | AD-16 | A call stuck in a node for two failures in a row is moved to a fallback by the runtime |
 | AD-17 | Every node gets a "no medical advice" rule from the runtime, whatever the persona says |
 | AD-18 | Recorded calls become regression tests, replayed as text through the real graph and LLM, several times each |
+| AD-19 | Calls record what they consumed, and cost is priced from it when read |
 
 The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
@@ -605,6 +606,44 @@ The grader is a separate model call **after** the replay, with a fixed rubric. I
 - *"Cost and time."* Each replay is a few LLM calls plus one grader call; the 3 replays of a 3-turn call run side by side in about 10 to 20 seconds. At most 6 run at once to stay within rate limits.
 
 **Revisit when** tests should run automatically (on save, or before accepting a ProsperO proposal), when agents have conversations that branch enough to need a simulated caller, or when ProsperO starts fixing failing tests.
+
+---
+
+## AD-19: Calls record what they consumed, and cost is priced from it when read
+
+**Decision.** Every call record now carries a `usage` block (`backend/usage.py`):
+- **Model:** number of calls, input tokens (and how many were cached), output tokens. Pipecat reports these for each model call.
+- **Text-to-speech:** requests and characters, also reported by Pipecat.
+- **Speech-to-text:** seconds, taken from the call's duration, because the stream is open for the whole call.
+
+A `UsageMeter` processor sits in the pipeline right after text-to-speech, where it sees both kinds of reports. Test replays (AD-18) are metered the same way (model only), and so is the grader.
+
+Records store **usage, not money**. The API works out the estimated cost when a record is read, from a price table in `backend/pricing.json` (per model, per 1,000 characters, per hour of audio). History shows each call's cost and breakdown, and the average per call overall and by version. Test runs show what they cost. Calls recorded before metering have no cost, and averages leave them out rather than guessing.
+
+**Product argument.**
+- **Cost per call is the unit economics of a voice agent.** It decides pricing for clinics and margins, and it's the number a clinic compares against a receptionist's time.
+- **Cost by version makes changes measurable.** A longer persona, a new safety rule or a different model shows up as a change in average cost next to the change in behaviour (AD-18).
+- **It shows where the money goes.** On the first metered call, text-to-speech was more than half the cost, the model about a quarter, and speech-to-text the rest. That points at the right lever: shorter replies, rather than a cheaper model.
+
+**AI angle.**
+- **Usage comes from the providers' own reports** (token counts in OpenAI's responses, characters sent to ElevenLabs), not from estimates. It's what the bill is based on.
+- **Input tokens grow with every turn,** because each model call resends the conversation, so long calls cost more per turn. Cached tokens are recorded separately because they're cheaper.
+- **Copilot and test costs are visible too:** a test run reports its replays and grading, so evaluation isn't a hidden cost.
+
+**Alternatives considered.**
+- **Storing the cost in the record.** Rejected: prices change and depend on the plan. Usage is a fact about the call; the price is an assumption that should be updatable.
+- **Reading the providers' billing dashboards.** Rejected as the main source: they report totals per account, not per call, agent or version.
+- **Estimating old calls from their transcripts.** Rejected: mixing guesses into averages would make them misleading. The averages state how many calls they cover.
+- **Measuring speech-to-text by the caller's speaking time.** Rejected: billing follows the open stream, so call duration is the honest proxy.
+
+**Cost of reversal.** Low. Usage is an extra field in records, and pricing is a read-time calculation.
+
+**Likely challenges.**
+- *"The prices may be wrong."* They're list prices found on 2026-10-24, kept in one file with the date, to update for your plans. Every record is re-priced on read.
+- *"Speech-to-text by duration overstates it."* Possibly, if billing turns out to count only audio sent. It's the conservative estimate until the bill confirms it.
+- *"Hosting and phone lines aren't counted."* True. Test calls run over WebRTC with no phone charge. A phone provider's per-minute rate can be added to the table when there is one.
+
+**Revisit when** calls go over phone lines (add per-minute charges), when ElevenLabs or OpenAI bills disagree with the estimates, or when costs need limits (alerts when a version's average jumps).
 
 ---
 

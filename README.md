@@ -102,7 +102,7 @@ Served on `:7860` next to Pipecat's own call endpoints (`/start`, `/sessions/…
 | `POST /api/agents/{id}/versions/{n}/restore` | Restore an old version as a new one |
 | `GET` / `POST /api/agents/{id}/tests`, `PUT` / `DELETE …/tests/{test_id}` | Regression tests: list, create from a call (`call_id`), edit, delete |
 | `POST /api/agents/{id}/tests/{test_id}/run` | Replay a test (3 times by default) against the latest version, or a draft sent as `agent` |
-| `GET /api/calls[?agent_id=…]`, `GET /api/calls/{id}` | Recorded calls |
+| `GET /api/calls[?agent_id=…]`, `GET /api/calls/{id}` | Recorded calls, with usage and estimated cost (prices in `backend/pricing.json`) |
 | `POST /api/validate` | Errors and warnings for a draft agent |
 | `GET /api/voices` | ElevenLabs voices for the voice picker |
 | `POST /api/copilot` | One ProsperO turn: the current agent, the chat and a message in; edits streamed out as server-sent events |
