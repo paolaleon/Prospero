@@ -88,7 +88,8 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 **Decision.** `AgentBuilder` reports what happens in the graph through optional async listeners:
 - `on_transition(from_node, function, to_node, args)`: a transition was taken, just before the next node starts;
 - `on_transition_refused(node, function, args, problems)`: a transition was refused for missing or invalid data (D-10);
-- `on_fallback(from_node, reason, to_node)`: a stuck call was moved to its fallback (D-16).
+- `on_fallback(from_node, reason, to_node)`: a stuck call was moved to its fallback (D-16);
+- `on_end(from_node, reason)`: the agent ended the call itself (D-20).
 
 Whoever runs the call assigns them (`builder.on_transition = listener`), because they usually need objects that only exist once the call has started. `bot.py` binds each call's listeners to its recorder (D-7) and to the live view (D-6); test replays bind them to the replay's record (D-18). If a listener fails, the error is logged and the call carries on.
 
@@ -103,10 +104,10 @@ Whoever runs the call assigns them (`builder.on_transition = listener`), because
 **Cost of reversal.** Low. It's one optional parameter.
 
 **Likely challenges.**
-- *"Why not one generic event listener?"* Three typed listeners keep each event's data explicit and checked; adding call records, refusals and fallbacks needed no change to how the builder is used.
+- *"Why not one generic event listener?"* Three typed listeners keep each event's data explicit and checked; adding call records, refusals, fallbacks and endings needed no change to how the builder is used.
 - *"It runs inside the transition, so a slow listener slows the call down."* True. Today's listeners only append to a record and send a message. Anything heavier should go on a queue instead of being awaited inside the transition.
 
-**Revisit when** listeners need to do heavier work (put a queue in front), or new kinds of nodes need to report more than these three events.
+**Revisit when** listeners need to do heavier work (put a queue in front), or new kinds of nodes need to report more than these events.
 
 ---
 
@@ -192,7 +193,7 @@ The browser and the backend are already connected for the call's audio (WebRTC).
 | Message | When | What the editor does |
 |---|---|---|
 | `call.started` | the call connects | learns the call's id, to open its record afterwards (D-7) |
-| `flow.node` | at the start, after every transition, and on a fallback (D-16) | highlights the new node and the transition taken, with the data it collected |
+| `flow.node` | at the start, after every transition, on a fallback (D-16), and when the agent ends the call (D-20) | highlights the new node and the transition taken, with the data it collected |
 | `call.event` | each time something is added to the call record: a turn, a transition, a refusal (D-10), a fallback | adds it to the live transcript |
 
 The live transcript is built only from `call.event`, which is the call record as it's being written. So what the user watches is exactly what gets saved, with no second version that could differ.
@@ -231,8 +232,8 @@ A record answers four questions:
 | Question | What the record holds |
 |---|---|
 | Which agent ran? | A full copy of the agent, plus `agent_id` and `agent_version` (`null` for an unsaved draft, D-5) |
-| What was said and done? | A timeline: caller and agent turns, transitions with the data collected, refused transitions (D-10) and fallbacks (D-16) |
-| How did it end? | The last node reached, everything collected, and who ended it: `agent` if it reached an end node, otherwise `caller` (usually a drop-off) |
+| What was said and done? | A timeline: caller and agent turns, transitions with the data collected, refused transitions (D-10), fallbacks (D-16), and the agent ending the call (D-20) |
+| How did it end? | The last node reached, everything collected, who ended it, and the outcome: completed, couldn't help, stuck, or caller hung up (D-20) |
 | What did it consume? | Tokens, speech characters and seconds (D-19) |
 
 The record is written by `CallRecorder` (`backend/call_record.py`) on the server, as the call happens. The editor's transcript is that same record arriving live (D-6), so what you watch is exactly what gets saved. Records are read through `/api/calls`, and History lists them. `calls/` is gitignored because transcripts can hold patient details.
@@ -367,6 +368,7 @@ An AI copilot that builds and edits medical voice agents from prompts, plus the 
 | D-17 | Every node gets the product's safety rules from the runtime, no medical advice and patient privacy, whatever the persona says |
 | D-18 | Recorded calls become regression tests, replayed as text through the real graph and LLM, several times each |
 | D-19 | Calls record what they consumed, and cost is priced from it when read |
+| D-20 | The agent can end the call from any node, and every call records how it ended |
 
 ---
 
@@ -712,12 +714,57 @@ Records store **usage, not money**. The API works out the estimated cost when a 
 
 ---
 
+### D-20: The agent can end the call from any node, and every call records how it ended
+
+**Decision.** Before this, a call could only end at an end node. An agent that had declined a request, or had nothing more to do, but had no transition to an end node from where it was, said goodbye and stayed on the line until the caller hung up. The record then said "caller hung up" at that node, which reads as a drop-off: the worst outcome, for a call that finished politely.
+
+Now:
+- **Every node that isn't an end node gets an `end_call` action from the runtime** (`backend/agent_builder/builder.py`), the way it gets the safety rules (D-17). It takes a reason: `caller_done` (the caller says they need nothing else) or `cannot_help` (the agent declined the same request twice and the caller wants nothing it can do). The runtime moves the call to a built-in ending that says a one-sentence goodbye and hangs up.
+- **Those nodes also get a rule in their role message** saying when to call it, because in testing a tool description alone was followed only about half the time.
+- **Every call records an outcome** (`store.call_outcome`), worked out for older calls too:
+
+| Outcome | When |
+|---|---|
+| `completed` | it reached an end node, or the agent ended it because the caller was done |
+| `could_not_help` | the agent ended it because the caller kept asking for something it can't do |
+| `stuck` | it got stuck and went to its fallback (D-16), however it ended after |
+| `caller_hung_up` | the caller left before any of those, usually a drop-off |
+
+Each `end_call` is an `ended` event in the record (from which node, why). History shows each call's outcome and a count per outcome; the Tests tab can expect a call to end this way. `end_call` is reserved, so no transition can use the name.
+
+**Product argument.**
+- **The agent hangs up when it's done,** like a receptionist would, instead of leaving the caller to do it.
+- **Metrics mean what they say.** "Caller hung up" now only counts real drop-offs, the signal for where an agent loses people. Calls the agent rightly declined show as "couldn't help", which says something different: demand the clinic may want to serve another way.
+- **No graph surgery needed.** Clinics don't have to wire a goodbye transition from every node; it's built in, for hand-made agents too.
+
+**AI angle.**
+- **The model decides when; the runtime does the rest.** Saying goodbye, hanging up and recording why are plain code. The model only picks the moment and the reason.
+- **Measured, not assumed.** On replays of the dental agent (D-18), the rule in the role message took endings from about half to 10 of 10 calls (a caller asking about a friend's appointment, one insisting on medical advice), with no booking call (0 of 5) ended early.
+- **A refused request is now a clean, counted outcome,** which tells ProsperO, in Phase 2, what callers ask for that agents can't handle.
+
+**Alternatives considered.**
+- **Require a goodbye transition from every node** (a validation rule). Rejected: tedious, easy to forget, and graphs become cluttered.
+- **Hang up after the caller is silent for a while.** Not done yet: it would catch callers who go quiet, but not a caller still talking who wants something the agent can't give. It could be added as a backstop.
+- **Detect a goodbye in the agent's words and hang up.** Rejected: matching phrases is brittle, the same reason language detection was dropped (D-15).
+
+**Cost of reversal.** Low. Removing the action and the rule restores the old behaviour; outcomes would still be worked out from records.
+
+**Likely challenges.**
+- *"The model could hang up too early."* That's the main risk. The rule says never while waiting for an answer, and booking replays never ended early. Regression tests catch it: an early end fails the final-node expectation and leaves caller turns unused.
+- *"It might not hang up when it should."* Possible; it's the model's call. The call then ends as before, when the caller hangs up, and shows as "caller hung up".
+- *"Two goodbyes?"* The model is told not to say goodbye itself, since the ending says it. In testing it said one.
+- *"Is a declined call 'completed'?"* No: it's `could_not_help`, counted separately, so the completion rate isn't inflated by refusals.
+
+**Revisit when** callers who go silent need handling (add a silence timeout), or the clinic wants a different ending (a closing line of its own, or transferring to staff once a phone system exists).
+
+---
+
 ## Gaps to prepare for
 
 These aren't decisions yet. They're the questions an AI product reviewer is most likely to ask.
 
 1. **Reviewing AI edits.** Mostly addressed: ProsperO's changes are a proposal marked on the canvas, accepted or rejected before they become a version (D-14), with rollback (D-4). Still missing: showing removed transitions, and accepting part of a proposal. (D-4, D-14)
 2. **Evaluations.** Partly addressed: recorded calls can be saved as tests and replayed against any change (D-18). Still missing: running them automatically (on save, or before accepting a ProsperO proposal), a simulated caller for conversations that branch, tests of the voice layer, and ProsperO reading failing tests to propose fixes. (D-3, D-7, D-18)
-3. **Routing reliability.** Partly addressed: a transition missing required data, or with a value outside its allowed list, is refused and the LLM asks again (D-10), and after two failures in a row the call moves to a fallback (D-16). Still missing: recovery when the LLM never calls a function or picks the wrong edge, global edges available from every node (such as "talk to a human"), a limit on turns per node, and detecting plausible but invented values. (D-2, D-3, D-10)
+3. **Routing reliability.** Partly addressed: a transition missing required data, or with a value outside its allowed list, is refused and the LLM asks again (D-10), and after two failures in a row the call moves to a fallback (D-16). The agent can also end the call itself when it can't help (D-20). Still missing: recovery when the LLM never calls a function or picks the wrong edge, global edges available from every node (such as "talk to a human"), a limit on turns per node, and detecting plausible but invented values. (D-2, D-3, D-10)
 4. **Running arbitrary prompts on shared keys.** Sign-in, rate limits and per-user quotas before anything is deployed. (D-5)
 5. **Patient data in transcripts and collected fields.** Encryption, retention limits, access controls and masking before real traffic. (D-6, D-7)
