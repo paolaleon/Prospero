@@ -236,6 +236,7 @@ def save_call(record: dict) -> None:
       "agent_id", "agent_version" (None for an unsaved draft), "agent",
       "started_at", "ended_at", "ended_by": "agent" | "caller",
       "final_node", "collected": {...},
+      "usage": {"llm": {...}, "tts": {...}, "stt": {...}}  (usage.py; absent in older calls),
       "events": [
         {"t", "type": "transition", "from_node", "function", "to_node", "args"},
         {"t", "type": "user", "text"},
@@ -274,5 +275,7 @@ def list_calls(agent_id: Optional[str] = None) -> list[dict]:
             "ended_by": call.get("ended_by"),
             "final_node": call.get("final_node"),
             "turns": sum(1 for e in call.get("events", []) if e["type"] in ("user", "agent")),
+            "model": (call.get("agent") or {}).get("model"),  # None: the default model
+            "usage": call.get("usage"),  # None for calls recorded before usage was metered
         })
     return sorted(out, key=lambda c: c["started_at"] or "", reverse=True)

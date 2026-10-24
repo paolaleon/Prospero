@@ -53,6 +53,7 @@ import api
 import store
 from agent_builder import AgentBuilder
 from call_record import CallRecorder
+from usage import UsageMeter
 
 # Load .env next to this file, so the bot runs the same from the repo root or backend/.
 load_dotenv(Path(__file__).parent / ".env", override=True)
@@ -132,6 +133,10 @@ async def run_bot(
         ),
     )
 
+    # After the TTS, the meter sees the usage both the LLM and the TTS report.
+    meter = UsageMeter()
+    recorder.usage, recorder.speech = meter.usage, True
+
     pipeline = Pipeline(
         [
             transport.input(),
@@ -139,6 +144,7 @@ async def run_bot(
             context_aggregator.user(),
             llm,
             tts,
+            meter,
             transport.output(),
             context_aggregator.assistant(),
         ]

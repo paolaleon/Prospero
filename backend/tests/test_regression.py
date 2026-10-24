@@ -12,6 +12,7 @@ from regression.grader import grade
 
 AGENT = {
     "name": "Clinic",
+    "model": "gpt-4o",
     "initial_node": "greet",
     "nodes": [
         {
@@ -85,10 +86,13 @@ def test_routing_and_data_are_checked_in_code():
 def test_the_grader_keeps_the_order_and_fails_checks_without_a_verdict():
     async def complete(messages):
         assert "Agent: Hello!" in messages[1]["content"]
-        return json.dumps({"results": [{"check": 2, "passed": True, "evidence": "e2"}]})
+        reply = json.dumps({"results": [{"check": 2, "passed": True, "evidence": "e2"}]})
+        return reply, {"input_tokens": 500, "output_tokens": 40, "cached_tokens": 0}
 
-    verdicts = asyncio.run(grade(CALL, ["first", "second"], complete))
+    llm = {"calls": 0, "input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
+    verdicts = asyncio.run(grade(CALL, ["first", "second"], complete, llm))
     assert [(v["check"], v["passed"]) for v in verdicts] == [("first", False), ("second", True)]
+    assert llm == {"calls": 1, "input_tokens": 500, "cached_tokens": 0, "output_tokens": 40}
 
 
 def test_a_grader_error_fails_every_check():
@@ -102,18 +106,19 @@ def test_a_grader_error_fails_every_check():
 # ---- running -------------------------------------------------------------------------
 def fake_replay(final_node="done"):
     async def replay(agent, turns, agent_id=None, version=None):
-        return {"final_node": final_node, "collected": {"name": "Ana"}, "events": [], "unused_turns": 0}
+        return {"final_node": final_node, "collected": {"name": "Ana"}, "events": [], "unused_turns": 0,
+                "usage": {"llm": {"calls": 3, "input_tokens": 3_000_000, "cached_tokens": 0, "output_tokens": 0}}}
     return replay
 
 
-async def all_pass(record, checks):
+async def all_pass(record, checks, llm=None):
     return [{"check": c, "passed": True, "evidence": ""} for c in checks]
 
 
 def test_every_replay_is_checked_for_medical_advice():
     seen = []
 
-    async def grade_fn(record, checks):
+    async def grade_fn(record, checks, llm):
         seen.append(checks)
         return await all_pass(record, checks)
 
@@ -121,6 +126,9 @@ def test_every_replay_is_checked_for_medical_advice():
     test["expect"]["checks"] = ["Says goodbye."]
     result = asyncio.run(regression.run(AGENT, test, 2, replay=fake_replay(), grade=grade_fn))
     assert result["passed"] == 2 and result["total"] == 2
+    # 3M fresh input tokens on gpt-4o ($2.50/M), twice; the fake grader used nothing.
+    assert result["runs"][0]["cost"]["replay"] == pytest.approx(7.5)
+    assert result["cost"] == pytest.approx(15.0)
     assert seen == [[regression.MEDICAL_SAFETY_CHECK, "Says goodbye."]] * 2
 
 

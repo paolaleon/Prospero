@@ -6,6 +6,9 @@
 # test replays (regression/), which keep it to check against the test.
 #
 
+from datetime import datetime
+from typing import Optional
+
 from loguru import logger
 
 import store
@@ -29,6 +32,9 @@ class CallRecorder:
             "collected": {},
             "events": [],
         }
+        # What the call consumed (usage.py), when it's being metered.
+        self.usage: Optional[dict] = None
+        self.speech = False  # voice calls also pay for speech-to-text, by time
 
     @property
     def call_id(self) -> str:
@@ -59,6 +65,12 @@ class CallRecorder:
         end_nodes = {n["name"] for n in self.record["agent"]["nodes"] if n.get("end")} | {BUILT_IN_FALLBACK}
         self.record["ended_at"] = store.now()
         self.record["ended_by"] = "agent" if self.record["final_node"] in end_nodes else "caller"
+        if self.usage is not None:
+            if self.speech:
+                started = datetime.fromisoformat(self.record["started_at"])
+                ended = datetime.fromisoformat(self.record["ended_at"])
+                self.usage["stt"] = {"seconds": round((ended - started).total_seconds(), 1)}
+            self.record["usage"] = self.usage
         return self.record
 
     def save(self) -> None:
