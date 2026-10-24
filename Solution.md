@@ -24,7 +24,7 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 | AD-2 | Validation rules live in one place, in the backend |
 | AD-3 | `AgentBuilder` reports transitions through a callback |
 | AD-4 | Agents are stored as immutable versions in JSON files |
-| AD-5 | A test call carries the agent definition with it |
+| AD-5 | A test call runs whatever is on the canvas, saved or not |
 | AD-6 | Live call state reaches the browser over RTVI |
 | AD-7 | Every call is recorded with the agent it ran |
 | AD-8 | The frontend and backend are separate apps that only communicate over HTTP |
@@ -136,34 +136,45 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 
 ---
 
-### AD-5: A test call carries the agent definition with it
+### AD-5: A test call runs whatever is on the canvas, saved or not
 
-**Decision.** The `/start` request body decides which agent a call runs (`store.resolve_call_agent`), in this order:
+**Decision.** Clicking "Start test call" runs the agent as it is on the canvas, including unsaved changes, with no save, deploy or restart. In the original setup, the bot loaded one fixed agent file when the server started, so trying a change meant editing that file and restarting.
 
-1. An inline `agent`: an unsaved draft. The editor also sends the `agent_id` it's a draft of, so the call record (AD-7) is linked to that agent, with `agent_version` set to `null`.
-2. A saved `agent_id`, at a given `version` or the latest.
-3. Neither: `AGENT_FLOW`.
+The editor's request to start a call (`POST /start`) says which agent to run:
 
-The editor sends the agent by reference (`agent_id` and `version`) when there are no unsaved changes, so the call record is tied to that version. Otherwise it sends the draft itself. A middleware (`StartValidationMiddleware` in `backend/call_guard.py`) checks that agent before the runner creates a session: an agent with errors is refused with `422` and its issues, and an unknown `agent_id` gets `404`.
+| You're calling… | The request contains | The call record (AD-7) says |
+|---|---|---|
+| A saved version, with no unsaved changes | `agent_id` and `version` | which version ran |
+| Your unsaved draft (or a ProsperO proposal) | the whole agent JSON, plus the `agent_id` it's a draft of | an unsaved draft of that agent (`agent_version: null`) |
+| Nothing | nothing | the default example agent (`AGENT_FLOW`) |
 
-**Product argument.** This is the iteration loop that matters most for a voice-agent builder: change a prompt, then call within seconds, with no save, deploy or restart. Each call is independent, so you could compare two versions of an agent side by side.
+The backend picks the agent in that order (`store.resolve_call_agent`). Sending only the version when nothing has changed ties the call to a real saved version, so calls can be compared by version.
 
-**AI angle.** Prompt engineering is trial and error, so the faster the loop, the better the agent. The loop is also ready for the copilot: it suggests an edit, the user calls the draft straight away, and only then decides to keep it.
+Before the call starts, the agent is validated with the same rules as the editor (`StartValidationMiddleware`, `backend/call_guard.py`). An agent with errors is refused with `422` and its issues; an unknown `agent_id` gets `404`.
+
+**Product argument.**
+- **This is the loop that matters most when building a voice agent:** change a prompt, call within seconds, listen, adjust.
+- **Drafts stay drafts.** Trying an idea doesn't create a version, so the history only holds what someone chose to keep.
+- **The same mechanism lets you call a ProsperO proposal before accepting it** (AD-14).
+
+**AI angle.**
+- **Prompt engineering is trial and error,** so the faster the loop, the better the agent ends up.
+- **Calls stay attributable:** each record says which version ran, or that it was a draft, which is what makes comparing versions possible (AD-7, AD-18, AD-19).
 
 **Alternatives considered.**
-- Saving before every call and running only saved agents. Rejected because it's slower and fills the store with half-finished agents.
-- Restarting the bot with a new `AGENT_FLOW` (the original setup). Rejected because it's far too slow.
+- **Save before every call, and only run saved versions.** Rejected: slower, and it fills the history with half-finished versions.
+- **Restart the bot with a new agent file** (the original setup). Rejected: far too slow.
 
 **Cost of reversal.** Low. Allowing only saved versions is a one-line change in `store.resolve_call_agent`.
 
 **Likely challenges.**
-- *"Anyone who can reach the backend can run any prompt on your OpenAI and ElevenLabs keys."* **This is the main security and cost risk.** Acceptable for a local tool. In production, require sign-in, run only saved and validated versions, and rate-limit calls and minutes per user.
-- *"What happens if the draft is invalid?"* The call is refused at `/start` with the same issues the editor shows, before any session or WebRTC connection exists. Without that check, the bot would only fail to build after the connection was up, and the client would wait for a call that never starts.
-- *"Why a middleware rather than your own endpoint?"* `/start` belongs to the Pipecat runner, which keeps its sessions internally. Putting the check in front of it keeps the runner's own behaviour and its upgrades untouched.
-- *"Can a client get round the check?"* Yes, by posting straight to the runner's `/api/offer` with an agent inside the request. The bot still refuses to build and logs the error, but that client gets no explanation. The editor never uses that path. For a deployment, only allow saved agents (see the cost risk above).
-- *"The draft is sent in full on every call."* Agents are a few KB, so it doesn't matter.
+- *"Anyone who can reach the backend can run any prompt on your OpenAI and ElevenLabs keys."* **This is the main security and cost risk.** Acceptable for a tool on your own machine. In production: require sign-in, run only saved and validated versions, and limit calls and minutes per user.
+- *"What happens if the draft has errors?"* The call is refused straight away, with the same errors the editor shows. Without the check, the bot would only fail after the audio connection was up, and the browser would wait for a call that never starts.
+- *"Why check in a middleware rather than your own endpoint?"* `/start` belongs to Pipecat's runner, which manages its sessions internally. A check in front of it leaves the runner, and its upgrades, untouched.
+- *"Can a client get round the check?"* Yes, by sending an agent straight to the runner's `/api/offer`. The bot still refuses to build it and logs the error, but that client gets no explanation. The editor never does this. For a deployment, only allow saved agents (see the first challenge).
+- *"The whole draft is sent on every call."* Agents are a few KB, so it doesn't matter.
 
-**Revisit when** the tool is deployed beyond localhost, or calls start to cost real money.
+**Revisit when** the tool is deployed beyond your own machine, or calls start to cost real money.
 
 ---
 
