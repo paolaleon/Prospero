@@ -378,17 +378,18 @@ The domain shows up in what ProsperO does by default when it builds an agent:
 - **Identity before details:** verify the caller (e.g. full name and date of birth) before discussing an existing appointment or record.
 - **No medical advice:** the agent never diagnoses or advises on treatment; it offers to book or to pass the question to staff. The runtime now adds this to every node of every agent (D-17).
 - **Emergencies first:** an urgent or emergency path that tells the caller to hang up and call emergency services, or transfers them, reachable from the start of the call.
+- **Patient privacy:** the agent never shares or confirms anything about anyone other than the caller. The runtime adds this to every node of every agent too (D-17).
 - **Collect only what's needed:** each piece of patient data must serve the call's purpose, in line with handling protected health information (PHI) carefully.
 - **Spoken, plain language:** short replies, one question at a time, confirmation of key details (date, time, name) before ending.
 
 **Product argument.**
 - **It matches Prosper's market.** Prosper's clients are healthcare organisations, and the deployment team's manual work is building agents for them. A copilot that already knows how a clinic call should go produces a usable first draft, not a generic one that needs heavy rework.
-- **Fewer iterations to a deployable agent.** The safety basics (emergencies, no medical advice, identity checks) are present from the first draft instead of being remembered by whoever writes the prompt.
+- **Fewer iterations to a deployable agent.** The safety basics (emergencies, no medical advice, patient privacy, identity checks) are present from the first draft instead of being remembered by whoever writes the prompt.
 - **It's a sharper product than a generic agent builder:** specialist copilots can be judged on outcomes in their domain.
 
 **AI angle.**
 - **A narrower domain makes the LLM more reliable.** The system prompt can carry a concrete checklist, real examples of good clinic flows, and domain vocabulary, instead of generic advice. That improves first drafts more than a larger model would.
-- **Safety-critical behaviour shouldn't depend on the user remembering to ask for it.** Emergency escalation and refusing medical advice are built in by default, and can later be checked by validation rules. For example: "no emergency path reachable from the start node" as a warning, using the rule registry from D-2.
+- **Safety-critical behaviour shouldn't depend on the user remembering to ask for it.** Emergency escalation, refusing medical advice and protecting other patients' information are built in by default; the last two are enforced by the runtime (D-17), and the rest can later be checked by validation rules. For example: "no emergency path reachable from the start node" as a warning, using the rule registry from D-2.
 - **Evaluation gets concrete.** Regression tests (D-18) cover a known set of call types: a new patient booking, a caller describing chest pain, a refill request.
 
 **Alternatives considered.**
@@ -400,7 +401,7 @@ The domain shows up in what ProsperO does by default when it builds an agent:
 
 **Likely challenges.**
 - *"Is a prompt enough for compliance?"* No. Defaults in the prompt make agents behave more safely, but compliance with regulations such as HIPAA also needs agreements with vendors, encryption, access controls and retention policies (gap 5). ProsperO makes better agents; it doesn't make the platform compliant.
-- *"What if the LLM drops a safety default while editing?"* For medical advice, it can't: the runtime adds that rule to every node (D-17). The other defaults (an emergency path, identity checks) are prompt guidance, not enforcement. Validation rules for them would catch a missing one on every edit, by a person or by ProsperO; they're the planned backstop.
+- *"What if the LLM drops a safety default while editing?"* For medical advice and patient privacy, it can't: the runtime adds those rules to every node (D-17). The other defaults (an emergency path, identity checks) are prompt guidance, not enforcement. Validation rules for them would catch a missing one on every edit, by a person or by ProsperO; they're the planned backstop.
 - *"What about a client outside medicine?"* ProsperO can still build their agent, but its defaults will assume a medical practice and need overriding. Domain packs are the answer if that becomes common.
 - *"Medical knowledge varies by country and specialty."* True, so ProsperO should ask about specifics that matter (e.g. the local emergency number, after-hours policy) rather than assume them.
 
@@ -472,7 +473,7 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 - *"It's slow."* Measured on the same prompt: `gpt-5.5` with default reasoning took about 30 seconds, with the first edits after about 15. With reasoning off (now the default, `PROSPERO_REASONING=none`), the first edits arrive after about 9 seconds and a build takes 23 to 29 seconds, with the same validity and medical defaults. Most of the time is spent writing out the edits (about 1,000 tokens per reply), not thinking. The loop streams replies and applies each tool call as soon as it's complete, but OpenAI delivers `gpt-5.5`'s tool calls all at the end of a reply, on both its APIs, so edits still arrive in bursts. `gpt-4.1` streams small replies and draws continuously from about 2 seconds (21 seconds per build, all checks passed on one prompt), but it's a less capable model; it remains available through `PROSPERO_MODEL`. `gpt-5.4-mini` was faster still but stopped before finishing. The editor plays bursts onto the canvas one edit at a time and shows what ProsperO is doing, so the wait is visible rather than silent.
 - *"Valid isn't the same as good."* True. Validation guarantees the agent runs, not that it handles callers well. The medical defaults in the prompt help; regression tests from recorded calls (D-18) are the real measure.
 - *"Anyone who reaches the endpoint spends your OpenAI credit."* As with test calls (D-5), fine locally; a deployment needs sign-in and rate limits.
-- *"The model could ignore the medical defaults."* It followed them in real builds. The no-medical-advice rule no longer depends on it: the runtime adds it to every node (D-17). The emergency path and identity checks still do; medical validation rules (D-11) are the planned backstop.
+- *"The model could ignore the medical defaults."* It followed them in real builds. The no-medical-advice and patient privacy rules no longer depend on it: the runtime adds them to every node (D-17). The emergency path and identity checks still do; medical validation rules (D-11) are the planned backstop.
 
 **Revisit when** turns get slow enough to hurt the experience (a faster model, or fewer edits per build), conversations get long (summarise history), or several people work on one agent (server-side sessions).
 
@@ -517,7 +518,7 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 
 **Decision.** Agents speak English, and only English. There's no language setting.
 - **Speech recognition and the voice are fixed to English** (`bot.py`). Nothing detects the caller's language.
-- **The builder adds an English-only rule to every node,** after the persona or any per-node persona override, so no node can drop it (`backend/agent_builder/english.py`). If the caller doesn't speak English, the agent says in English that it can only help in English.
+- **The builder adds an English-only rule to every node,** after the persona (or any per-node persona override) and the safety rules (D-17), so no node can drop it (`backend/agent_builder/english.py`). If the caller doesn't speak English, the agent says in English that it can only help in English.
 - **Speech in another language comes through as garbled English text**, which gives the agent nothing meaningful to act on. A caller who can't continue reaches the fallback after two refused transitions in a row (D-16).
 - **ProsperO** is told agents are English only, and never to write anything about languages into a persona, greeting or node.
 
@@ -615,7 +616,7 @@ ProsperO's prompt doesn't ask personas to repeat these rules; it tells ProsperO 
 **Cost of reversal.** Low. Each rule is one constant, and the builder adds them in one line.
 
 **Likely challenges.**
-- *"A prompt can still be jailbroken."* Yes. This is the first layer; it fixes the common case (an agent that was never told). Regression tests, which always check for advice (D-18), and a future output check are the next layers.
+- *"A prompt can still be jailbroken."* Yes. This is the first layer; it fixes the common case (an agent that was never told). Regression tests, which always check for advice and privacy slips (D-18), and a future output check are the next layers.
 - *"Some clinics want to share opening hours, prep instructions, or 'bring your insurance card'."* That's not medical advice, and the rule doesn't forbid it. Pre-visit instructions a clinic writes in a node are its own content, not the agent's judgement.
 - *"Why not let the LLM decide what counts as advice?"* It does, inside the rule. The runtime only guarantees the rule is there.
 - *"A parent needs to reschedule their child's appointment."* The privacy rule blocks discussing someone else's existing appointment, so that case needs an agent designed for it, with identity checks for the guardian. It's deliberately strict until a clinic needs it.
