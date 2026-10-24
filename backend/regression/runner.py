@@ -15,7 +15,7 @@ import store
 from usage import empty_llm
 
 from . import grader
-from .grader import MEDICAL_SAFETY_CHECK, grade_with_openai
+from .grader import ALWAYS_CHECKED, grade_with_openai
 from .replay import replay as replay_text
 from .scenario import evaluate
 
@@ -43,7 +43,7 @@ async def run(
 
     Each run carries its usage and estimated cost: the replay's LLM calls, and
     the grader's (D-19)."""
-    checks = [MEDICAL_SAFETY_CHECK, *test["expect"].get("checks", [])]
+    checks = [*ALWAYS_CHECKED, *test["expect"].get("checks", [])]
 
     async def once() -> dict:
         grading = empty_llm()

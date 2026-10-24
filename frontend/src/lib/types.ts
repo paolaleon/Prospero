@@ -174,6 +174,11 @@ export interface TestExpect {
   final_node: string | null;
   collected: string[];
   checks: string[];
+  // Checked in code. Tests saved before these existed get the defaults:
+  // no fallback, replies of at most 40 words, turns not checked.
+  no_fallback?: boolean;
+  max_reply_words?: number | null; // null: not checked
+  max_turns?: number | null;
 }
 
 export interface RegressionTest {
@@ -187,7 +192,7 @@ export interface RegressionTest {
 }
 
 export interface TestCheckResult {
-  kind: "final_node" | "collected" | "check";
+  kind: "final_node" | "collected" | "no_fallback" | "reply_length" | "turns" | "check";
   label: string;
   passed: boolean;
   detail: string;

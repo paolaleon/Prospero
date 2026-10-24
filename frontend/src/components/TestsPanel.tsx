@@ -5,7 +5,7 @@ import { usd } from "../lib/cost";
 import { timeAgo } from "../lib/format";
 import { isDirty, useEditor } from "../lib/store";
 import type { Agent, RegressionTest, TestExpect, TestRun, TestRunResult } from "../lib/types";
-import { CommitInput, Label, Select, TextArea } from "./fields";
+import { CommitInput, Label, Select, TextArea, TextInput } from "./fields";
 import Transcript from "./Transcript";
 
 type TestFields = Partial<{ name: string; caller_turns: string[]; expect: TestExpect }>;
@@ -248,6 +248,29 @@ function TestCard({
               </div>
             </div>
           )}
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-1.5 text-xs">
+              <input
+                type="checkbox"
+                checked={test.expect.no_fallback ?? true}
+                onChange={(e) => expect({ no_fallback: e.target.checked })}
+              />
+              Never falls back (doesn't get stuck)
+            </label>
+            <Limit
+              label="Replies of at most"
+              unit="words"
+              value={test.expect.max_reply_words === undefined ? 40 : test.expect.max_reply_words}
+              onCommit={(max_reply_words) => expect({ max_reply_words })}
+            />
+            <Limit
+              label="Done within"
+              unit="turns"
+              value={test.expect.max_turns ?? null}
+              onCommit={(max_turns) => expect({ max_turns })}
+            />
+            <p className="text-[11px] text-slate-400">Leave a limit blank to not check it.</p>
+          </div>
           <div>
             <Label hint="one per line, checked by a grader">What the agent should do</Label>
             <LinesInput
@@ -256,8 +279,9 @@ function TestCard({
               placeholder="e.g. Offers to book an appointment."
               onCommit={(checks) => expect({ checks })}
             />
-            <p className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
-              <ShieldCheck size={12} /> Always checked: the agent gives no medical advice.
+            <p className="mt-1 flex items-start gap-1 text-[11px] text-slate-500">
+              <ShieldCheck size={12} className="mt-px shrink-0" /> Always checked: the agent gives no medical advice, and
+              shares nothing about other patients.
             </p>
           </div>
           {result && <Runs result={result} />}
@@ -329,6 +353,45 @@ function RunDetail({ index, run }: { index: number; run: TestRun }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** A whole-number limit that can be left blank (not checked); commits on blur. */
+function Limit({
+  label,
+  unit,
+  value,
+  onCommit,
+}: {
+  label: string;
+  unit: string;
+  value: number | null;
+  onCommit: (value: number | null) => void;
+}) {
+  const [text, setText] = useState(value?.toString() ?? "");
+  useEffect(() => setText(value?.toString() ?? ""), [value]);
+
+  function commit() {
+    const n = text.trim() === "" ? null : Number(text);
+    if (n !== null && (!Number.isInteger(n) || n < 1 || n > 500)) return setText(value?.toString() ?? "");
+    if (n !== value) onCommit(n);
+  }
+
+  return (
+    <label className="flex items-center gap-1.5 text-xs">
+      {label}
+      <TextInput
+        type="number"
+        min={1}
+        max={500}
+        value={text}
+        placeholder="—"
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        className="!w-16 !py-0.5"
+      />
+      {unit}
+    </label>
   );
 }
 

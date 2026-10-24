@@ -50,7 +50,9 @@ def temp_store(tmp_path, monkeypatch):
 def test_a_call_becomes_its_caller_turns_and_what_happened():
     test = regression.from_call(CALL)
     assert test["caller_turns"] == ["I'd like to book, I'm Ana.", "Thanks."]
-    assert test["expect"] == {"final_node": "done", "collected": ["name"], "checks": []}
+    # 4 turns on the call (2 agent, 2 caller), plus a margin of 2.
+    assert test["expect"] == {"final_node": "done", "collected": ["name"], "checks": [],
+                              "no_fallback": True, "max_reply_words": 40, "max_turns": 6}
     assert test["from_call"] == "c1"
     assert test["name"] == "I'd like to book, I'm Ana."
 
@@ -68,6 +70,10 @@ def test_a_call_where_the_caller_said_nothing_cant_be_a_test():
     {"expect": {"collected": [3]}},
     {"expect": {"checks": [""]}},
     {"expect": {"checks": ["x"] * 11}},
+    {"expect": {"no_fallback": "yes"}},
+    {"expect": {"max_reply_words": 0}},
+    {"expect": {"max_turns": 2.5}},
+    {"expect": {"max_turns": True}},
 ])
 def test_bad_edits_are_refused(fields):
     with pytest.raises(ValueError):
@@ -77,10 +83,54 @@ def test_bad_edits_are_refused(fields):
 # ---- checking a replay ---------------------------------------------------------------
 def test_routing_and_data_are_checked_in_code():
     test = regression.from_call(CALL)
-    record = {"final_node": "greet", "collected": {"name": ""}}
+    record = {"final_node": "greet", "collected": {"name": ""}, "events": [{"type": "agent", "text": "Hi."}]}
     grades = [{"check": "Polite", "passed": True, "evidence": "\"Hello!\""}]
     results = regression.evaluate(test, record, grades)
-    assert [(r["kind"], r["passed"]) for r in results] == [("final_node", False), ("collected", False), ("check", True)]
+    assert [(r["kind"], r["passed"]) for r in results] == [
+        ("final_node", False), ("collected", False), ("no_fallback", True), ("reply_length", True),
+        ("turns", True), ("check", True)]
+
+
+def kinds(results):
+    return {r["kind"]: r for r in results}
+
+
+def test_a_fallback_fails_the_test():
+    record = {"final_node": "built_in_fallback", "collected": {}, "events": [
+        {"type": "fallback", "from_node": "greet", "reason": "missing information", "to_node": "built_in_fallback"}]}
+    result = kinds(regression.evaluate(regression.from_call(CALL), record, []))["no_fallback"]
+    assert not result["passed"] and "greet" in result["detail"]
+
+
+def test_a_long_reply_fails_and_is_quoted():
+    long_reply = " ".join(["word"] * 41)
+    record = {"final_node": "done", "collected": {"name": "Ana"},
+              "events": [{"type": "agent", "text": "Short."}, {"type": "agent", "text": long_reply}]}
+    result = kinds(regression.evaluate(regression.from_call(CALL), record, []))["reply_length"]
+    assert not result["passed"] and "41 words" in result["detail"] and long_reply in result["detail"]
+
+
+def test_too_many_turns_fails():
+    events = [{"type": "user", "text": "hi"}, {"type": "agent", "text": "hello"}] * 4  # 8 turns, limit 6
+    record = {"final_node": "done", "collected": {"name": "Ana"}, "events": events}
+    result = kinds(regression.evaluate(regression.from_call(CALL), record, []))["turns"]
+    assert not result["passed"] and result["detail"] == "Took 8 turns."
+
+
+def test_limits_can_be_turned_off():
+    test = regression.from_call(CALL)
+    test = regression.clean({"expect": {**test["expect"], "no_fallback": False, "max_reply_words": None,
+                                        "max_turns": None}}, test)
+    record = {"final_node": "done", "collected": {"name": "Ana"}, "events": [
+        {"type": "fallback", "from_node": "greet", "reason": "x", "to_node": "done"}]}
+    assert set(kinds(regression.evaluate(test, record, []))) == {"final_node", "collected"}
+
+
+def test_older_tests_get_the_default_checks():
+    old = regression.from_call(CALL)
+    old["expect"] = {"final_node": None, "collected": [], "checks": []}  # saved before the new checks
+    record = {"final_node": "done", "collected": {}, "events": []}
+    assert set(kinds(regression.evaluate(old, record, []))) == {"no_fallback", "reply_length"}
 
 
 def test_the_grader_keeps_the_order_and_fails_checks_without_a_verdict():
@@ -115,7 +165,7 @@ async def all_pass(record, checks, llm=None):
     return [{"check": c, "passed": True, "evidence": ""} for c in checks]
 
 
-def test_every_replay_is_checked_for_medical_advice():
+def test_every_replay_is_checked_for_medical_advice_and_patient_privacy():
     seen = []
 
     async def grade_fn(record, checks, llm):
@@ -129,7 +179,7 @@ def test_every_replay_is_checked_for_medical_advice():
     # 3M fresh input tokens on gpt-4o ($2.50/M), twice; the fake grader used nothing.
     assert result["runs"][0]["cost"]["replay"] == pytest.approx(7.5)
     assert result["cost"] == pytest.approx(15.0)
-    assert seen == [[regression.MEDICAL_SAFETY_CHECK, "Says goodbye."]] * 2
+    assert seen == [[regression.MEDICAL_SAFETY_CHECK, regression.PATIENT_PRIVACY_CHECK, "Says goodbye."]] * 2
 
 
 def test_a_failed_replay_counts_as_a_failed_run():
