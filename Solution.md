@@ -25,7 +25,7 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 | D-3 | `AgentBuilder` reports transitions through a callback |
 | D-4 | Agents are stored as immutable versions in JSON files |
 | D-5 | A test call runs whatever is on the canvas, saved or not |
-| D-6 | Live call state reaches the browser over RTVI |
+| D-6 | During a call, the editor shows where the agent is in the graph, live, over the call's own connection |
 | D-7 | Every call is saved as a self-contained record: what was said, what happened, and the agent that ran |
 | D-8 | The frontend and backend are separate apps that only communicate over HTTP |
 | D-9 | Every edit to an agent is a named, serialisable operation |
@@ -178,31 +178,42 @@ Before the call starts, the agent is validated with the same rules as the editor
 
 ---
 
-### D-6: Live call state reaches the browser over RTVI
+### D-6: During a call, the editor shows where the agent is in the graph, live, over the call's own connection
 
-**Decision.** `bot.py` sends two kinds of RTVI server message over the call's existing WebRTC connection:
-- `{"type": "flow.node", ...}`: once when the client is ready (with the start node), and after every transition (with `from_node`, `function` and the collected `args`). The editor uses these to light up the active node and the edges taken.
-- `{"type": "call.event", "event": ...}`: every event the call recorder writes (user turns, agent turns, transitions), as it's written (D-7).
+**Decision.** While a test call runs, the editor highlights the node the agent is in and the transitions it took, and shows the transcript as it happens. Without this, the user only hears the agent: when it goes the wrong way, there's no telling which node it was in or which transition it chose.
 
-The live transcript is built from `call.event`, not from the SDK's own transcription callbacks, so what the editor shows during a call is exactly what gets saved.
+The browser and the backend are already connected for the call's audio (WebRTC). Pipecat lets the backend send its own messages over that same connection (RTVI server messages), so the backend sends three:
 
-**Product argument.** Users can debug by watching. The active node lights up, the data each step collected appears, and the transcript lines up with the path through the graph. That trust is what users of ElevenLabs Agents and Retell rely on.
+| Message | When | What the editor does |
+|---|---|---|
+| `call.started` | the call connects | learns the call's id, to open its record afterwards (D-7) |
+| `flow.node` | at the start, after every transition, and on a fallback (D-16) | highlights the new node and the transition taken, with the data it collected |
+| `call.event` | each time something is added to the call record: a turn, a transition, a refusal (D-10), a fallback | adds it to the live transcript |
 
-**AI angle.** It explains LLM decisions. When the agent misroutes, the user sees which edge the model chose and with what arguments, and can fix that edge's description on the spot. That turns a black box into something the user can debug.
+The live transcript is built only from `call.event`, which is the call record as it's being written. So what the user watches is exactly what gets saved, with no second version that could differ.
+
+**Product argument.**
+- **Users debug by watching.** The active node lights up, the data each step collected appears, and the transcript lines up with the path through the graph.
+- **Problems are visible as they happen:** a refused transition shows in amber, and a stuck call's move to its fallback is shown.
+- **It's the trust users expect** from tools like ElevenLabs Agents and Retell.
+
+**AI angle.**
+- **It makes the LLM's routing decisions visible.** When the agent misroutes, the user sees which transition the model chose and with what data, and can fix that transition's description on the spot.
+- **A black box becomes something you can debug,** which is what makes iterating on prompts productive.
 
 **Alternatives considered.**
-- A separate WebSocket or a polling endpoint for call state. Rejected because it's an extra channel and needs its own session matching.
-- Showing only the transcript. Rejected because users can't see the routing decisions.
+- **A separate WebSocket, or the browser polling for state.** Rejected: an extra channel that has to be matched to the right call. RTVI rides on the connection the call already has.
+- **Showing only the transcript.** Rejected: users can't see the routing decisions, which is where most bugs are.
 
-**Cost of reversal.** Medium. The frontend will depend on the message format.
+**Cost of reversal.** Medium. The editor's live view depends on these message formats.
 
 **Likely challenges.**
-- *"Nothing is stored when the call ends."* It is: the same transitions are written to the call record (D-7). RTVI is only the live view.
-- *"It sends patient data (names, reasons for visit) to the browser."* **This is a healthcare compliance point.** For a local test tool, the person testing is the caller. In production, transcripts and collected fields are protected health information: they need encryption, retention limits and access controls, and may need masking in shared views.
-- *"The agent's line only appears once it has finished speaking."* True. Events are sent when a turn is recorded. Streaming the text word by word from the SDK's callbacks would feel livelier, but it would be a second version of the transcript that could differ from the saved record.
-- *"It only works with Pipecat clients."* True, and acceptable because the editor is a Pipecat client. Telephony calls wouldn't get the live view, but they would get call logs.
+- *"Is anything stored, or is it only on screen?"* Stored: the same events are written to the call record (D-7). These messages are only the live view of it.
+- *"It sends patient data (names, reasons for visit) to the browser."* **This is a healthcare compliance point.** In a local test tool, the person testing is the caller. In production, transcripts and collected data are protected health information: they need encryption, retention limits and access controls, and may need masking in shared views.
+- *"The agent's line only appears once it has finished speaking."* True: an event is sent when the turn is recorded. Streaming the words as they're spoken would feel livelier, but it would be a second version of the transcript that could differ from the saved record.
+- *"It only works with Pipecat clients."* True, and fine because the editor is one. Phone calls wouldn't get the live view, but they would still be recorded (D-7).
 
-**Revisit when** you add phone calls or real patient traffic.
+**Revisit when** phone calls or real patient traffic are added.
 
 ---
 
