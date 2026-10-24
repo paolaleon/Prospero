@@ -12,7 +12,7 @@ from typing import Optional
 from loguru import logger
 
 import store
-from agent_builder.builder import BUILT_IN_FALLBACK
+from agent_builder.builder import BUILT_IN_END, BUILT_IN_FALLBACK
 
 
 class CallRecorder:
@@ -55,16 +55,22 @@ class CallRecorder:
         self.record["final_node"] = to_node
         return self.add("fallback", from_node=from_node, reason=reason, to_node=to_node)
 
+    def ended(self, from_node: str, reason: str) -> dict:
+        # The agent ended the call itself (D-20): it says goodbye and hangs up.
+        self.record["final_node"] = BUILT_IN_END
+        return self.add("ended", from_node=from_node, reason=reason)
+
     def refusal(self, node: str, function: str, args: dict, problems: list) -> dict:
         # A transition the LLM tried without the data it requires. Repeated
         # refusals in one node are a sign its instructions need work.
         return self.add("refused", node=node, function=function, args=args, problems=problems)
 
     def finish(self) -> dict:
-        # The built-in fallback ends the call too.
-        end_nodes = {n["name"] for n in self.record["agent"]["nodes"] if n.get("end")} | {BUILT_IN_FALLBACK}
+        # The built-in fallback and the agent's own ending end the call too.
+        end_nodes = {n["name"] for n in self.record["agent"]["nodes"] if n.get("end")} | {BUILT_IN_FALLBACK, BUILT_IN_END}
         self.record["ended_at"] = store.now()
         self.record["ended_by"] = "agent" if self.record["final_node"] in end_nodes else "caller"
+        self.record["outcome"] = store.call_outcome(self.record)
         if self.usage is not None:
             if self.speech:
                 started = datetime.fromisoformat(self.record["started_at"])

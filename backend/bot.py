@@ -52,6 +52,7 @@ from pipecat_flows import FlowManager
 import api
 import store
 from agent_builder import AgentBuilder
+from agent_builder.builder import BUILT_IN_END
 from call_record import CallRecorder
 from usage import UsageMeter
 
@@ -121,8 +122,13 @@ async def run_bot(
         await notify_event(recorder.fallback(from_node, reason, to_node))
         await notify_node(to_node, from_node=from_node, function="fallback", args={})
 
+    async def on_end(from_node: str, reason: str) -> None:
+        await notify_event(recorder.ended(from_node, reason))
+        await notify_node(BUILT_IN_END, from_node=from_node, function="end_call", args={"reason": reason})
+
     builder.on_transition = on_transition
     builder.on_fallback = on_fallback
+    builder.on_end = on_end
     builder.on_transition_refused = on_transition_refused
 
     context = LLMContext()

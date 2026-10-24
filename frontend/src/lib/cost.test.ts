@@ -11,6 +11,7 @@ const call = (version: number | null, total: number | null): CallSummary => ({
   started_at: "",
   ended_at: null,
   ended_by: null,
+  outcome: "completed",
   final_node: null,
   turns: 0,
   model: null,

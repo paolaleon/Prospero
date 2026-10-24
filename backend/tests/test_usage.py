@@ -64,3 +64,24 @@ def test_a_model_without_a_price_makes_the_cost_incomplete():
 
 def test_calls_without_usage_have_no_cost():
     assert pricing.cost(None, "gpt-4o") is None
+
+
+# ---- how a call ended (D-20) ------------------------------------------------------------
+@pytest.mark.parametrize("events, final_node, outcome", [
+    ([{"type": "ended", "from_node": "a", "reason": "caller_done"}], "built_in_end", "completed"),
+    ([{"type": "ended", "from_node": "a", "reason": "cannot_help"}], "built_in_end", "could_not_help"),
+    ([{"type": "fallback", "from_node": "a", "reason": "x", "to_node": "built_in_fallback"}], "built_in_fallback", "stuck"),
+    ([], "a", "completed"),  # "a" is an end node
+    ([], "b", "caller_hung_up"),
+])
+def test_every_call_says_how_it_ended(events, final_node, outcome):
+    agent = {**AGENT, "nodes": [{"name": "a", "end": True}, {"name": "b"}]}
+    assert store.call_outcome({"agent": agent, "final_node": final_node, "events": events}) == outcome
+
+
+def test_the_agent_ending_a_call_is_recorded():
+    recorder = CallRecorder(AGENT, "a", 1, source="test")
+    recorder.ended("a", "cannot_help")
+    record = recorder.finish()
+    assert record["final_node"] == "built_in_end" and record["ended_by"] == "agent"
+    assert record["outcome"] == "could_not_help"

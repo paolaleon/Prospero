@@ -20,7 +20,7 @@ from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 from .english import ENGLISH_ONLY_RULE
 from .medical import SAFETY_RULES
 from .schema import AgentConfig, Edge, Node
-from .validation import validate_agent
+from .validation import END_CALL_FUNCTION, validate_agent
 
 # Called each time a transition is taken, just before the next node starts:
 # (from_node, function, to_node, collected_args). bot.py uses it to record the
@@ -34,6 +34,9 @@ RefusalHook = Callable[[str, str, dict, list], Awaitable[None]]
 # Called when a stuck call is moved to its fallback: (from_node, reason, to_node).
 FallbackHook = Callable[[str, str, str], Awaitable[None]]
 
+# Called when the agent ends the call itself: (from_node, reason).
+EndHook = Callable[[str, str], Awaitable[None]]
+
 # A call whose transitions are refused this many times in a row in one node
 # goes to its fallback (D-16).
 FAILURE_LIMIT = 2
@@ -44,6 +47,30 @@ BUILT_IN_FALLBACK_TASK = (
     "Apologise briefly that you couldn't help with this on the call, and say the clinic's staff "
     "can help directly. Then say goodbye. Don't ask the caller anything."
 )
+
+# The agent can end the call from any node that isn't an end node (D-20).
+# Without this, a call could only end at an end node: an agent that had said
+# all it could (or had declined a request) stayed on the line until the caller
+# hung up, and the call looked like a drop-off.
+BUILT_IN_END = "built_in_end"
+END_REASONS = {
+    "caller_done": "the caller says they need nothing else (for example, they answer no to 'anything else?')",
+    "cannot_help": (
+        "you've declined the same request twice (such as medical advice or another patient's information) "
+        "and the caller still doesn't want anything you can help with"
+    ),
+}
+END_CALL_DESCRIPTION = (
+    "End the call: when " + ", or when ".join(END_REASONS.values()) + ". Never call it while you're waiting "
+    "for the caller's answer. Don't say goodbye yourself: the goodbye is said for you."
+)
+# Added to the role message of every node that can end the call: a system
+# instruction is followed more reliably than a tool description alone.
+END_CALL_RULE = (
+    "Ending the call: as soon as " + ", or " .join(END_REASONS.values()) + ", call end_call instead of "
+    "replying. Don't keep asking whether there's anything else."
+)
+BUILT_IN_END_TASK = "Say a brief, warm goodbye in one sentence. Don't ask the caller anything."
 
 
 def check_args(edge: Edge, args: dict) -> list[str]:
@@ -86,6 +113,7 @@ class AgentBuilder:
         self.on_transition: Optional[TransitionHook] = None
         self.on_transition_refused: Optional[RefusalHook] = None
         self.on_fallback: Optional[FallbackHook] = None
+        self.on_end: Optional[EndHook] = None
         # Where the call is, and how many times in a row it has failed there.
         self.current_node: Optional[str] = None
         self._refusals = 0
@@ -136,6 +164,32 @@ class AgentBuilder:
         await _notify(self.on_fallback, from_node, reason, self.fallback_name)
         return config
 
+    def end_node_config(self) -> NodeConfig:
+        """Where a call goes when the agent ends it: a goodbye, then hang up."""
+        return {
+            "name": BUILT_IN_END,
+            "role_message": self._role_message(None),
+            "task_messages": [{"role": "developer", "content": BUILT_IN_END_TASK}],
+            "functions": [],
+            "post_actions": [{"type": "end_conversation"}],
+        }
+
+    def _end_call_function(self, node: Node) -> FlowsFunctionSchema:
+        async def handler(args: dict, flow_manager: FlowManager):
+            reason = args.get("reason") if args.get("reason") in END_REASONS else "caller_done"
+            logger.info(f"[{END_CALL_FUNCTION}] in {node.name} | {reason}")
+            self._enter(BUILT_IN_END)
+            await _notify(self.on_end, node.name, reason)
+            return {"status": "success"}, self.end_node_config()
+
+        return FlowsFunctionSchema(
+            name=END_CALL_FUNCTION,
+            description=END_CALL_DESCRIPTION,
+            properties={"reason": {"type": "string", "enum": list(END_REASONS)}},
+            required=["reason"],
+            handler=handler,
+        )
+
     def _stuck(self, count: int) -> bool:
         # Never fall back from the fallback itself, or a stuck call would loop.
         return count >= FAILURE_LIMIT and self.current_node != self.fallback_name
@@ -147,10 +201,13 @@ class AgentBuilder:
     def _make_node(self, node: Node) -> NodeConfig:
         node_config: NodeConfig = {
             "name": node.name,
-            "role_message": self._role_message(node.role_message),
+            "role_message": self._role_message(node.role_message, can_end=not node.end),
             "task_messages": node.task_messages,
             "functions": [self._make_edge_function(node, edge) for edge in node.edges],
         }
+        # An end node ends the call anyway; any other node can end it early.
+        if not node.end:
+            node_config["functions"].append(self._end_call_function(node))
         if node.pre_actions:
             node_config["pre_actions"] = node.pre_actions
         # Explicit post_actions win; otherwise a terminal node ends the call.
@@ -160,11 +217,15 @@ class AgentBuilder:
             node_config["post_actions"] = [{"type": "end_conversation"}]
         return node_config
 
-    def _role_message(self, override: Optional[str]) -> str:
+    def _role_message(self, override: Optional[str], can_end: bool = False) -> str:
         # The safety rules (no medical advice, patient privacy) and the English
         # rule are added to every node, so no persona, written by hand or
-        # overridden per node, can drop them (D-17, D-15).
-        return "\n\n".join([override or self.config.persona, *SAFETY_RULES, ENGLISH_ONLY_RULE]).strip()
+        # overridden per node, can drop them (D-17, D-15). Nodes that can end
+        # the call also get the rule for when to (D-20).
+        parts = [override or self.config.persona, *SAFETY_RULES, ENGLISH_ONLY_RULE]
+        if can_end:
+            parts.append(END_CALL_RULE)
+        return "\n\n".join(parts).strip()
 
     def _make_edge_function(self, node: Node, edge: Edge) -> FlowsFunctionSchema:
         async def handler(args: dict, flow_manager: FlowManager):

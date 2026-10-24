@@ -113,6 +113,13 @@ export type CallEvent =
       to_node: string;
     }
   | {
+      // The agent ended the call itself, then said goodbye (D-20).
+      t: string;
+      type: "ended";
+      from_node: string;
+      reason: "caller_done" | "cannot_help";
+    }
+  | {
       // The LLM tried a transition without the data it requires; the call stayed put.
       t: string;
       type: "refused";
@@ -146,6 +153,9 @@ export interface Cost {
   complete: boolean;
 }
 
+/** How a call ended, for metrics (backend store.call_outcome, D-20). */
+export type CallOutcome = "completed" | "could_not_help" | "stuck" | "caller_hung_up";
+
 export interface CallSummary {
   id: string;
   source: "test" | "production" | "mock";
@@ -155,6 +165,7 @@ export interface CallSummary {
   started_at: string;
   ended_at: string | null;
   ended_by: "agent" | "caller" | null;
+  outcome: CallOutcome;
   final_node: string | null;
   turns: number;
   model: string | null; // null: the default model

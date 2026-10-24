@@ -220,7 +220,11 @@ function TestCard({
                   {n}
                 </option>
               ))}
-              {test.expect.final_node && !nodes.includes(test.expect.final_node) && (
+              <option value="built_in_end">The agent ends the call itself (built in)</option>
+              <option value="built_in_fallback">Polite ending when stuck (built in)</option>
+              {test.expect.final_node &&
+                !nodes.includes(test.expect.final_node) &&
+                !["built_in_end", "built_in_fallback"].includes(test.expect.final_node) && (
                 <option value={test.expect.final_node}>{test.expect.final_node} (not in this agent)</option>
               )}
             </Select>

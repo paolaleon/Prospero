@@ -96,9 +96,13 @@ async def replay(
     async def on_fallback(from_node, reason, to_node):
         recorder.fallback(from_node, reason, to_node)
 
+    async def on_end(from_node, reason):
+        recorder.ended(from_node, reason)
+
     builder.on_transition = on_transition
     builder.on_transition_refused = on_refused
     builder.on_fallback = on_fallback
+    builder.on_end = on_end
 
     llm = OpenAILLMService(api_key=os.environ["OPENAI_API_KEY"], model=builder.config.model)
     context_aggregator = LLMContextAggregatorPair(LLMContext())

@@ -237,3 +237,47 @@ def test_the_rule_comes_after_the_persona():
     message = AgentBuilder.from_dict(data).build_initial_node()["role_message"]
     order = [data["persona"], "Medical safety:", "Patient privacy:", "Language:"]
     assert [message.index(part) for part in order] == sorted(message.index(part) for part in order)
+
+
+# ---- the agent ending the call (D-20) -------------------------------------------------
+from agent_builder.builder import BUILT_IN_END
+
+
+def end_call(node_config):
+    return next(f for f in node_config["functions"] if f.name == "end_call")
+
+
+def test_every_node_but_end_nodes_can_end_the_call():
+    data = json.loads(EXAMPLE.read_text())
+    builder = AgentBuilder.from_dict(data)
+    for node in builder.config.nodes:
+        names = [f.name for f in builder._make_node(node)["functions"]]
+        assert ("end_call" in names) == (not node.end), node.name
+
+
+def test_ending_the_call_says_goodbye_hangs_up_and_is_reported():
+    builder = AgentBuilder.from_json(EXAMPLE)
+    ended = []
+
+    async def on_end(from_node, reason):
+        ended.append((from_node, reason))
+
+    builder.on_end = on_end
+    start = builder.build_initial_node()
+    result, next_node = asyncio.run(end_call(start).handler({"reason": "cannot_help"}, SimpleNamespace(state={})))
+    assert next_node["name"] == BUILT_IN_END and next_node["functions"] == []
+    assert next_node["post_actions"] == [{"type": "end_conversation"}]
+    assert ended == [(start["name"], "cannot_help")]
+    assert builder.current_node == BUILT_IN_END
+
+
+def test_an_unknown_reason_counts_as_the_caller_being_done():
+    builder = AgentBuilder.from_json(EXAMPLE)
+    ended = []
+
+    async def on_end(from_node, reason):
+        ended.append(reason)
+
+    builder.on_end = on_end
+    asyncio.run(end_call(builder.build_initial_node()).handler({}, SimpleNamespace(state={})))
+    assert ended == ["caller_done"]

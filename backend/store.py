@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from agent_builder.builder import BUILT_IN_END, BUILT_IN_FALLBACK
+
 BACKEND_DIR = Path(__file__).parent
 AGENTS_DIR = BACKEND_DIR / "agents"
 CALLS_DIR = BACKEND_DIR / "calls"
@@ -235,6 +237,7 @@ def save_call(record: dict) -> None:
       "id", "source": "test" | "production" | "mock",
       "agent_id", "agent_version" (None for an unsaved draft), "agent",
       "started_at", "ended_at", "ended_by": "agent" | "caller",
+      "outcome": "completed" | "could_not_help" | "stuck" | "caller_hung_up"  (see call_outcome),
       "final_node", "collected": {...},
       "usage": {"llm": {...}, "tts": {...}, "stt": {...}}  (usage.py; absent in older calls),
       "events": [
@@ -243,10 +246,31 @@ def save_call(record: dict) -> None:
         {"t", "type": "agent", "text", "interrupted"},
         {"t", "type": "refused", "node", "function", "args", "problems"},
         {"t", "type": "fallback", "from_node", "reason", "to_node"},
+        {"t", "type": "ended", "from_node", "reason": "caller_done" | "cannot_help"},
       ]
     }
     """
     _write_json(CALLS_DIR / f"{_check_id(record['id'])}.json", record)
+
+
+def call_outcome(record: dict) -> str:
+    """How a call ended, for metrics (D-20):
+
+    - "stuck": it got stuck and was moved to its fallback (D-16), however it ended after;
+    - "completed": it reached an end node, or the agent ended it because the caller was done;
+    - "could_not_help": the agent ended it because the caller kept asking for something it can't do;
+    - "caller_hung_up": the caller left before any of those, usually a drop-off.
+
+    Works for calls recorded before outcomes existed too.
+    """
+    events = record.get("events", [])
+    if record.get("final_node") == BUILT_IN_FALLBACK or any(e["type"] == "fallback" for e in events):
+        return "stuck"
+    ended = next((e for e in events if e["type"] == "ended"), None)
+    if ended:
+        return "could_not_help" if ended.get("reason") == "cannot_help" else "completed"
+    end_nodes = {n.get("name") for n in (record.get("agent") or {}).get("nodes", []) if n.get("end")}
+    return "completed" if record.get("final_node") in end_nodes | {BUILT_IN_END} else "caller_hung_up"
 
 
 def get_call(call_id: str) -> dict:
@@ -273,6 +297,7 @@ def list_calls(agent_id: Optional[str] = None) -> list[dict]:
             "started_at": call.get("started_at"),
             "ended_at": call.get("ended_at"),
             "ended_by": call.get("ended_by"),
+            "outcome": call.get("outcome") or call_outcome(call),
             "final_node": call.get("final_node"),
             "turns": sum(1 for e in call.get("events", []) if e["type"] in ("user", "agent")),
             "model": (call.get("agent") or {}).get("model"),  # None: the default model

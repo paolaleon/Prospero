@@ -5,7 +5,7 @@ import { useCall } from "../lib/call";
 import { averageCost, tokens, usd } from "../lib/cost";
 import { timeAgo } from "../lib/format";
 import { isDirty, useEditor } from "../lib/store";
-import type { CallRecord, CallSummary, VersionMeta } from "../lib/types";
+import type { CallOutcome, CallRecord, CallSummary, VersionMeta } from "../lib/types";
 import Transcript from "./Transcript";
 
 export default function HistoryPanel({
@@ -41,6 +41,7 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
   return (
     <section className="border-b border-slate-200 px-4 py-4">
       <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Calls</h3>
+      {calls && calls.length > 0 && <OutcomeSummary calls={calls} />}
       {calls && calls.length > 0 && <CostSummary calls={calls} />}
       {calls === null ? (
         <p className="text-xs text-slate-400">Loading…</p>
@@ -59,6 +60,8 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
                   <span className="block truncate text-sm">
                     {c.final_node === "built_in_fallback" ? (
                       "Polite ending (stuck)"
+                    ) : c.final_node === "built_in_end" ? (
+                      "Agent ended the call"
                     ) : (
                       <>
                         Ended at <span className="font-mono">{c.final_node}</span>
@@ -71,7 +74,7 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
                     {c.cost && ` · ${usd(c.cost.total)}`}
                   </span>
                 </span>
-                <Outcome endedBy={c.ended_by} />
+                <Outcome outcome={c.outcome} />
               </button>
             </li>
           ))}
@@ -142,12 +145,34 @@ function CostBreakdown({ call }: { call: CallRecord }) {
   );
 }
 
-function Outcome({ endedBy }: { endedBy: CallSummary["ended_by"] }) {
-  // "caller" before an end node usually means a drop-off: the most useful signal to iterate on.
-  return endedBy === "agent" ? (
-    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">completed</span>
-  ) : (
-    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">caller hung up</span>
+const OUTCOMES: Record<CallOutcome, { label: string; tone: string }> = {
+  completed: { label: "completed", tone: "bg-emerald-50 text-emerald-700" },
+  could_not_help: { label: "couldn't help", tone: "bg-slate-100 text-slate-700" },
+  stuck: { label: "stuck", tone: "bg-red-50 text-red-700" },
+  // Hanging up before the call finished usually means a drop-off: the most useful signal to iterate on.
+  caller_hung_up: { label: "caller hung up", tone: "bg-amber-50 text-amber-700" },
+};
+
+function Outcome({ outcome }: { outcome: CallOutcome }) {
+  const { label, tone } = OUTCOMES[outcome] ?? OUTCOMES.caller_hung_up;
+  return <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${tone}`}>{label}</span>;
+}
+
+/** How this agent's calls ended, as counts: the outcome metric (D-20). */
+function OutcomeSummary({ calls }: { calls: CallSummary[] }) {
+  const counts = new Map<CallOutcome, number>();
+  for (const c of calls) counts.set(c.outcome, (counts.get(c.outcome) ?? 0) + 1);
+  const order: CallOutcome[] = ["completed", "could_not_help", "stuck", "caller_hung_up"];
+  return (
+    <div className="mb-2 flex flex-wrap gap-1.5 text-xs">
+      {order
+        .filter((o) => counts.get(o))
+        .map((o) => (
+          <span key={o} className={`rounded px-1.5 py-0.5 font-medium ${OUTCOMES[o].tone}`}>
+            {counts.get(o)} {OUTCOMES[o].label}
+          </span>
+        ))}
+    </div>
   );
 }
 
@@ -185,7 +210,7 @@ function CallDetail({ call, onBack, onSavedTest }: { call: CallRecord; onBack: (
             {seconds !== null && ` · ${seconds}s`}
           </div>
         </div>
-        <Outcome endedBy={call.ended_by} />
+        <Outcome outcome={call.outcome} />
       </div>
 
       <div className="space-y-3 border-b border-slate-100 px-4 py-3 text-xs">

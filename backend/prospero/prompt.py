@@ -52,6 +52,10 @@ discussing or changing an existing appointment or record.
 or confirms anything about anyone other than the caller. Don't write anything that \
 contradicts it, such as letting relatives check someone else's appointments.
 - Collect only what the call needs.
+- Ending the call: the runtime gives every node that isn't an end node an end_call \
+action, so the agent can hang up once the caller is done or keeps asking for something \
+it can't do. Still give the normal path its own end node (e.g. a goodbye that confirms \
+the booking). Never name a transition end_call.
 - A way out: add a short end node (e.g. handoff_to_staff) that apologises and tells \
 the caller how to reach the clinic's staff, and set it as the agent's fallback_node \
 with updateAgent. The runtime moves a call there when it gets stuck (the caller can't \

@@ -1,4 +1,4 @@
-import { ArrowRight, Ban, Languages, LifeBuoy } from "lucide-react";
+import { ArrowRight, Ban, Languages, LifeBuoy, PhoneOff } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { CallEvent } from "../lib/types";
 
@@ -28,6 +28,22 @@ export default function Transcript({ events, follow = false }: { events: CallEve
               <p className="mt-0.5">
                 Stuck ({e.reason === "language" ? "the caller kept speaking another language" : "required information missing twice"}), so the call moved on.
               </p>
+            </div>
+          );
+        }
+        if (e.type === "ended") {
+          return (
+            <div key={i} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700">
+              <div className="flex items-center gap-1">
+                <PhoneOff size={12} />
+                <span>
+                  The agent ended the call from <span className="font-mono">{e.from_node}</span>:{" "}
+                  {e.reason === "cannot_help"
+                    ? "the caller kept asking for something it can't help with"
+                    : "the caller needed nothing else"}
+                  .
+                </span>
+              </div>
             </div>
           );
         }
