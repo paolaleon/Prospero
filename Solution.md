@@ -704,6 +704,11 @@ Records store **usage, not money**. The API works out the estimated cost when a 
 
 **Revisit when** calls go over phone lines (add per-minute charges), when ElevenLabs or OpenAI bills disagree with the estimates, or when costs need limits (alerts when a version's average jumps).
 
+**Next steps to scale (not built yet).** At about $0.04 per minute on the first metered call, cost grows with call minutes, and text-to-speech is the biggest share. Three steps, in order of saving per unit of work:
+1. **Pre-record the agent's fixed lines, and keep replies short.** Greetings, "please hold", the fallback goodbye and the emergency message are the same on every call: generate their audio once and play it (Pipecat Flows' `tts_say` action covers scripted lines), instead of paying for the same characters each time. The 40-word reply check in regression tests (D-18) keeps the generated replies short.
+2. **Allow a cheaper model per node.** Routing steps ("booking or cancellation?") don't need gpt-4o; gpt-4o-mini costs about a sixteenth as much. Today the model is set per agent; a per-node setting would keep the strong model where it matters. Regression tests, replayed 3 times each, confirm quality doesn't drop before a change is kept.
+3. **Alert when a version's cost per call jumps.** History already shows the average cost per call by version; an alert when a new version's average rises past a threshold would catch costly changes (a longer persona, a chattier prompt) before the bill does.
+
 ---
 
 ## Gaps to prepare for
