@@ -26,7 +26,7 @@ A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 | D-4 | Agents are stored as immutable versions in JSON files |
 | D-5 | A test call runs whatever is on the canvas, saved or not |
 | D-6 | Live call state reaches the browser over RTVI |
-| D-7 | Every call is recorded with the agent it ran |
+| D-7 | Every call is saved as a self-contained record: what was said, what happened, and the agent that ran |
 | D-8 | The frontend and backend are separate apps that only communicate over HTTP |
 | D-9 | Every edit to an agent is a named, serialisable operation |
 | D-10 | A transition without the data it requires is refused, and the call stays in its node |
@@ -206,37 +206,45 @@ The live transcript is built from `call.event`, not from the SDK's own transcrip
 
 ---
 
-### D-7: Every call is recorded with the agent it ran
+### D-7: Every call is saved as a self-contained record: what was said, what happened, and the agent that ran
 
-**Decision.** `bot.py` records each call on the server (`CallRecorder`) and writes it to `backend/calls/{id}.json` when the call ends, whether the agent hung up or the caller did. The record is self-contained:
-- **Agent:** a snapshot of the agent it ran, plus `agent_id` and `agent_version` (`null` for an unsaved draft).
-- **Timeline:** user turns, agent turns (marked if interrupted), transitions (with their arguments) and refused transitions (D-10).
-- **Outcome:** `final_node`, the merged `collected` data, and `ended_by` (`agent` if it finished on an end node, otherwise `caller`).
-- **Source:** `test`, `production` or `mock`.
+**Decision.** When a call ends, however it ends, the backend saves a record of it (`backend/calls/{id}.json`). Without this, a test call is gone once you hang up: you can't look back at where it went wrong, compare it with a call on another version, or hand it to the copilot.
 
-Records are read through `/api/calls`. The client is told the call id when it connects (an RTVI `call.started` message). The `calls/` folder is gitignored.
+A record answers four questions:
 
-**Product argument.** Every test call becomes something you can come back to. Users can replay what happened, see where callers dropped off (`ended_by: caller` before an end node), and compare calls across versions. Recording on the server, not in the browser, means production calls get recorded in exactly the same format even though they never pass through the editor.
+| Question | What the record holds |
+|---|---|
+| Which agent ran? | A full copy of the agent, plus `agent_id` and `agent_version` (`null` for an unsaved draft, D-5) |
+| What was said and done? | A timeline: caller and agent turns, transitions with the data collected, refused transitions (D-10) and fallbacks (D-16) |
+| How did it end? | The last node reached, everything collected, and who ended it: `agent` if it reached an end node, otherwise `caller` (usually a drop-off) |
+| What did it consume? | Tokens, speech characters and seconds (D-19) |
 
-**AI angle.** This is the copilot's raw material for the "production iteration" workflow.
-- **Calls are evidence tied to nodes.** Each turn falls between known transitions, so an issue ("the agent offered times before asking the reason for the visit") can be pinned to a node and edge. The copilot can then propose a targeted edit instead of rewriting the prompt.
-- **Snapshots keep evidence readable.** A call stays interpretable after the agent changes or nodes are renamed, because it carries the agent it ran. That's why node names can stay as identifiers without separate ids.
-- **Ready for issue detection.** An LLM pass over the records can flag likely problems (loops, drop-offs, wrong transitions, missing data) without anyone listening to calls. That's the "detection is a burden" part of the brief.
-- **Mock calls use the same format** (`source: "mock"`), so the copilot's loop can be shown without real call data.
+The record is written by `CallRecorder` (`backend/call_record.py`) on the server, as the call happens. The editor's transcript is that same record arriving live (D-6), so what you watch is exactly what gets saved. Records are read through `/api/calls`, and History lists them. `calls/` is gitignored because transcripts can hold patient details.
+
+**Product argument.**
+- **Every call can be revisited.** Users can reread a call, see its path on the canvas, and see where callers dropped off.
+- **Calls can be compared across versions,** because each record says which version ran.
+- **It's recorded on the server, not in the browser,** so phone or production calls would be recorded in the same format even though they never pass through the editor.
+
+**AI angle.** Records are the raw material for improving agents from call data:
+- **Problems can be pinned to a node.** Every turn sits between known transitions, so "it offered times before asking the reason for the visit" points to a specific node, and a fix can target that node instead of rewriting the whole prompt.
+- **A copy of the agent keeps old calls readable.** A call still makes sense after the agent is edited or nodes are renamed, because it carries the agent it ran.
+- **It powers what came next:** any call can become a regression test (D-18), costs are averaged from records (D-19), and the copilot or an LLM pass can scan records for loops, drop-offs and missing data without anyone listening to calls.
+- **Imported or mock calls can use the same format** (`source: "mock"`), so the copilot's loop can be shown without real traffic.
 
 **Alternatives considered.**
-- Recording in the browser from the RTVI events. Rejected because production and phone calls never pass through the editor.
-- Storing only a reference to the agent version. Rejected because drafts have no version, and a call would become unreadable if a version were ever deleted.
-- Using Pipecat's audio recording. Deferred: text and structure are what the copilot reasons over. Audio can be added for tone and latency analysis.
+- **Recording in the browser.** Rejected: phone and production calls never pass through the editor.
+- **Storing only the version number, not a copy of the agent.** Rejected: drafts have no version, and a call would become unreadable if a version were deleted.
+- **Recording audio.** Deferred: text and structure are what the copilot reasons over. Audio could be added for tone and latency analysis.
 
-**Cost of reversal.** Medium. The copilot and the call-history views will depend on the record format.
+**Cost of reversal.** Medium. History, regression tests, cost tracking and the copilot all read this format.
 
 **Likely challenges.**
-- *"Transcripts of a healthcare line are protected health information."* Yes. That's why `calls/` is gitignored. In production it needs encryption, retention limits, access controls, and masking before anything goes to an LLM.
-- *"Turns have no audio timing or latency."* True. Timestamps are when each event was recorded, not when audio played. Latency analysis would need Pipecat's metrics added to the record.
-- *"A record is only written when the call ends."* If the process crashes mid-call, that call is lost. Acceptable for now. Appending events to the file as they happen would fix it.
+- *"Transcripts of a healthcare line are protected health information."* Yes. That's why `calls/` is gitignored. In production it needs encryption, retention limits, access controls, and masking before anything is sent to an LLM.
+- *"There's no audio timing or latency."* True. Timestamps are when each event was recorded, not when audio played. Latency analysis would need Pipecat's timing metrics added to the record.
+- *"The record is only written when the call ends."* If the backend crashes mid-call, that call is lost. Acceptable for now; appending events to the file as they happen would fix it.
 
-**Revisit when** you add real traffic (privacy controls), need latency or audio analysis, or call volume outgrows one folder of files (database).
+**Revisit when** real traffic arrives (privacy controls), latency or audio analysis is needed, or call volume outgrows a folder of files (move to a database).
 
 ---
 
