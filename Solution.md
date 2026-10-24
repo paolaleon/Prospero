@@ -303,6 +303,8 @@ If a check fails, the transition is **refused**:
 - the handler returns an error to the LLM ("Missing required field 'reason'. Ask the caller for it, then call this function again."). Pipecat Flows runs the LLM again straight away, so the agent asks the caller for what's missing;
 - an `on_transition_refused` listener is notified. `bot.py` records it as a `refused` event in the call record (D-7) and streams it to the editor, where it shows in amber in the transcript.
 
+The caller gets **two attempts**: a second refused transition in a row in the same node ends the retries, and the call moves to its fallback (D-16), which ends it politely or goes to a node the clinic chose.
+
 **Product argument.** A field marked "Required" in the editor now means what it says. Without this, an agent could move on to `offer_times` without a name, and the booking would fail later, or never, with nothing in the transcript to explain why. Builders get the behaviour they configured, and see it in the transcript when the model tries to cut corners.
 
 **AI angle.**
@@ -318,11 +320,11 @@ If a check fails, the transition is **refused**:
 **Cost of reversal.** Low. Removing the check restores the previous behaviour; recorded `refused` events would simply stop appearing.
 
 **Likely challenges.**
-- *"Can the call get stuck asking again and again?"* In principle, if the caller never gives the information. There's no limit yet on refusals per node; the caller can still hang up, and the repeated refusals show up in the record. A limit, or a fallback edge after N refusals, is part of gap 3.
+- *"Can the call get stuck asking again and again?"* No. After two refused transitions in a row in the same node, the call moves to its fallback (D-16). Both refusals stay in the record, in amber, so the node that lost the caller stands out.
 - *"It doesn't catch invented values."* Correct. "Unknown" or a misheard name passes, because it's a non-empty string. Detecting that needs checks specific to each field (e.g. a date format) or an LLM review of the call afterwards.
 - *"Only required fields and allowed values are checked, not types."* True. A number sent as text, for example, isn't refused. Type checks could be added to `check_args` the same way.
 
-**Revisit when** you add stricter field types (dates, phone numbers), when a limit on refusals per node is needed, or if strict structured outputs become simple to enable through Pipecat.
+**Revisit when** you add stricter field types (dates, phone numbers), or if strict structured outputs become simple to enable through Pipecat.
 
 ---
 
