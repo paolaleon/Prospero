@@ -10,7 +10,7 @@ import Transcript from "./Transcript";
 
 type TestFields = Partial<{ name: string; caller_turns: string[]; expect: TestExpect }>;
 
-/** Regression tests: recorded calls replayed against the agent (AD-18). */
+/** Regression tests: recorded calls replayed against the agent (D-18). */
 export default function TestsPanel() {
   const agentId = useEditor((s) => s.agentId)!;
   const draft = useEditor((s) => s.draft)!;

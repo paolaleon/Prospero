@@ -1,5 +1,5 @@
 #
-# Usage — what a call consumed, as reported by the services (AD-19).
+# Usage — what a call consumed, as reported by the services (D-19).
 #
 # Pipecat reports usage as MetricsFrames when metrics are on: tokens per LLM
 # call and characters per TTS request. UsageMeter sits in the pipeline after

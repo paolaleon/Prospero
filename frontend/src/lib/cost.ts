@@ -1,4 +1,4 @@
-// Estimated call costs (AD-19): formatting, and averages over recorded calls.
+// Estimated call costs (D-19): formatting, and averages over recorded calls.
 
 import type { CallSummary } from "./types";
 

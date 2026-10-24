@@ -91,7 +91,7 @@ async def run_bot(
     config = builder.config
     logger.info(f"Starting '{config.name}' with {len(config.nodes)} nodes (call {recorder.call_id})")
 
-    # Every agent speaks English (AD-15): speech in and out is fixed to it.
+    # Every agent speaks English (D-15): speech in and out is fixed to it.
     stt = ElevenLabsRealtimeSTTService(
         api_key=os.environ["ELEVENLABS_API_KEY"],
         settings=ElevenLabsRealtimeSTTService.Settings(language="en"),

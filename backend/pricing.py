@@ -1,5 +1,5 @@
 #
-# Pricing — turns recorded usage into an estimated cost, in USD (AD-19).
+# Pricing — turns recorded usage into an estimated cost, in USD (D-19).
 #
 # The prices live in pricing.json, so they can be updated without a code
 # change, and every record is re-priced when it's read.

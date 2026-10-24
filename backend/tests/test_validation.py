@@ -184,7 +184,7 @@ def test_a_new_rule_only_needs_a_decorator():
         validation._NODE_RULES.remove(node_names_are_snake_case)
 
 
-# ---- fallback node (AD-16) -----------------------------------------------------------
+# ---- fallback node (D-16) -----------------------------------------------------------
 def test_fallback_node_must_exist():
     assert ("error", "Fallback node 'nope' is not a defined node.", None, None) in issues(agent(fallback_node="nope"))
 

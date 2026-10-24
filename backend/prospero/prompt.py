@@ -1,6 +1,6 @@
 #
 # ProsperO's system prompt: who it is, the agent format, and the defaults every
-# medical voice agent gets (AD-11).
+# medical voice agent gets (D-11).
 #
 
 SYSTEM_PROMPT = """\

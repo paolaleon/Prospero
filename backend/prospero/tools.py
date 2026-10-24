@@ -1,5 +1,5 @@
 #
-# ProsperO's tools: the agent operations (AD-9, AD-12), plus validate and finish.
+# ProsperO's tools: the agent operations (D-9, D-12), plus validate and finish.
 #
 # The edit tools are generated from the operation registry, so the LLM is only
 # offered operations that exist, with exactly the fields apply_op accepts.

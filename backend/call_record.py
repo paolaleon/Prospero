@@ -51,7 +51,7 @@ class CallRecorder:
         return self.add("transition", from_node=from_node, function=function, to_node=to_node, args=args)
 
     def fallback(self, from_node: str, reason: str, to_node: str) -> dict:
-        # The call got stuck and was moved on (AD-16): that's where it now is.
+        # The call got stuck and was moved on (D-16): that's where it now is.
         self.record["final_node"] = to_node
         return self.add("fallback", from_node=from_node, reason=reason, to_node=to_node)
 

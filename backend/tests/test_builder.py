@@ -123,7 +123,7 @@ def test_a_failing_refusal_listener_does_not_break_the_call():
 
 
 
-# ---- English only (AD-15) ----------------------------------------------------------
+# ---- English only (D-15) ----------------------------------------------------------
 def role_message(builder, data, node_index=0):
     return builder._make_node(builder._nodes_by_name[data["nodes"][node_index]["name"]])["role_message"]
 
@@ -148,7 +148,7 @@ def test_old_agents_with_a_languages_list_still_load():
     assert "speak only English" in role_message(AgentBuilder.from_dict(data), data)
 
 
-# ---- recovering from a stuck node (AD-16) ----------------------------------------
+# ---- recovering from a stuck node (D-16) ----------------------------------------
 from agent_builder.builder import BUILT_IN_FALLBACK
 
 
@@ -217,7 +217,7 @@ def test_the_built_in_ending_speaks_english():
 
 
 
-# ---- medical safety (AD-17) -----------------------------------------------------------
+# ---- medical safety (D-17) -----------------------------------------------------------
 from agent_builder.medical import NO_MEDICAL_ADVICE_RULE
 
 

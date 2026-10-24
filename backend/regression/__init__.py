@@ -1,5 +1,5 @@
 #
-# Regression tests — recorded calls, replayed against an agent (AD-18).
+# Regression tests — recorded calls, replayed against an agent (D-18).
 #
 #   recorded call  ->  test (caller turns + expectations)
 #   test + agent   ->  text replay through the real Flows graph and LLM, a few times

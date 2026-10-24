@@ -75,7 +75,7 @@ class AgentConfig:
     persona: str = ""                    # global role_message, applied to every node
     voice_id: str = DEFAULT_VOICE_ID
     model: str = DEFAULT_MODEL
-    # Where a call goes when it gets stuck in a node; None: a built-in polite ending (AD-16).
+    # Where a call goes when it gets stuck in a node; None: a built-in polite ending (D-16).
     fallback_node: Optional[str] = None
 
     @classmethod

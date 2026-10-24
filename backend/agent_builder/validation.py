@@ -66,7 +66,7 @@ class Context:
             for edge in node.get("edges") or []:
                 if edge.get("target") in ctx.known:
                     ctx.graph[node["name"]].append(edge["target"])
-        # The runtime can send a call to the fallback node from anywhere (AD-16).
+        # The runtime can send a call to the fallback node from anywhere (D-16).
         ctx.reachable = _reachable(ctx.graph, data.get("initial_node"))
         if data.get("fallback_node") in ctx.known:
             ctx.reachable |= _reachable(ctx.graph, data["fallback_node"])

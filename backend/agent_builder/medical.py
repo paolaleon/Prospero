@@ -1,7 +1,7 @@
 #
-# Medical safety (AD-17).
+# Medical safety (D-17).
 #
-# Every agent is a medical voice agent (AD-11), so the builder adds this rule to
+# Every agent is a medical voice agent (D-11), so the builder adds this rule to
 # every node, after the persona or any per-node persona override. It doesn't
 # depend on who wrote the persona: an agent made by hand, or edited, can't end
 # up without it.

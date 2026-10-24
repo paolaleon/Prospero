@@ -35,7 +35,7 @@ RefusalHook = Callable[[str, str, dict, list], Awaitable[None]]
 FallbackHook = Callable[[str, str, str], Awaitable[None]]
 
 # A call whose transitions are refused this many times in a row in one node
-# goes to its fallback (AD-16).
+# goes to its fallback (D-16).
 FAILURE_LIMIT = 2
 
 # Used when the agent has no fallback node of its own.
@@ -110,7 +110,7 @@ class AgentBuilder:
         self._enter(self.config.initial_node)
         return self._make_node(self._nodes_by_name[self.config.initial_node])
 
-    # ---- recovering from a stuck node (AD-16) --------------------------------
+    # ---- recovering from a stuck node (D-16) --------------------------------
     @property
     def fallback_name(self) -> str:
         return self.config.fallback_node or BUILT_IN_FALLBACK
@@ -163,7 +163,7 @@ class AgentBuilder:
     def _role_message(self, override: Optional[str]) -> str:
         # The medical safety and English rules are added to every node, so no
         # persona, written by hand or overridden per node, can drop them
-        # (AD-17, AD-15).
+        # (D-17, D-15).
         return f"{override or self.config.persona}\n\n{NO_MEDICAL_ADVICE_RULE}\n\n{ENGLISH_ONLY_RULE}".strip()
 
     def _make_edge_function(self, node: Node, edge: Edge) -> FlowsFunctionSchema:

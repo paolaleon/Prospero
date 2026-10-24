@@ -1,5 +1,5 @@
 {
-  "about": "Prices used to estimate costs from recorded usage (AD-19). Edit to match your plans; costs are recalculated when records are read. USD. LLM prices per 1M tokens; 'cached' applies to input tokens served from OpenAI's prompt cache.",
+  "about": "Prices used to estimate costs from recorded usage (D-19). Edit to match your plans; costs are recalculated when records are read. USD. LLM prices per 1M tokens; 'cached' applies to input tokens served from OpenAI's prompt cache.",
   "as_of": "2026-10-24",
   "llm": {
     "gpt-5.5": {"input": 5.0, "cached": 0.5, "output": 30.0},

@@ -1,5 +1,5 @@
 #
-# English only (AD-15).
+# English only (D-15).
 #
 # Every agent speaks English. bot.py fixes speech-to-text and the voice to
 # English, and the builder adds this rule to every node, after any persona

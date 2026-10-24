@@ -45,7 +45,7 @@ export interface Agent {
   persona?: string;
   voice_id?: string;
   model?: string;
-  /** Node a stuck call is moved to; absent or null: a built-in polite ending (AD-16). */
+  /** Node a stuck call is moved to; absent or null: a built-in polite ending (D-16). */
   fallback_node?: string | null;
 }
 
@@ -96,7 +96,7 @@ export type CallEvent =
       args: Record<string, unknown>;
     }
   | {
-      // Only in calls recorded while a language guard existed (since removed, AD-15):
+      // Only in calls recorded while a language guard existed (since removed, D-15):
       // the call locked to a language, or the caller's words in another weren't passed on.
       t: string;
       type: "language";
@@ -105,7 +105,7 @@ export type CallEvent =
       text: string;
     }
   | {
-      // The call got stuck in a node and was moved to its fallback (AD-16).
+      // The call got stuck in a node and was moved to its fallback (D-16).
       t: string;
       type: "fallback";
       from_node: string;
@@ -123,7 +123,7 @@ export type CallEvent =
     };
 
 // What a call consumed (backend/usage.py), and its estimated cost in USD at
-// today's prices (backend/pricing.py, AD-19). Calls recorded before usage was
+// today's prices (backend/pricing.py, D-19). Calls recorded before usage was
 // metered have neither.
 export interface LlmUsage {
   calls: number;
@@ -169,7 +169,7 @@ export interface CallRecord extends Omit<CallSummary, "turns" | "agent_name" | "
 }
 
 // Regression tests: a recorded call's caller turns, replayed against the agent
-// (backend/regression/, AD-18).
+// (backend/regression/, D-18).
 export interface TestExpect {
   final_node: string | null;
   collected: string[];

@@ -42,7 +42,7 @@ async def run(
     """{"at", "agent_version", "passed", "total", "cost", "runs": [...]}, one run per replay.
 
     Each run carries its usage and estimated cost: the replay's LLM calls, and
-    the grader's (AD-19)."""
+    the grader's (D-19)."""
     checks = [MEDICAL_SAFETY_CHECK, *test["expect"].get("checks", [])]
 
     async def once() -> dict:
