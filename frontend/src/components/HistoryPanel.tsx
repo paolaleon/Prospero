@@ -2,6 +2,7 @@ import { ArrowLeft, Bot, FlaskConical, PhoneIncoming, RotateCcw, Sparkles, User 
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useCall } from "../lib/call";
+import { averageCost, tokens, usd } from "../lib/cost";
 import { timeAgo } from "../lib/format";
 import { isDirty, useEditor } from "../lib/store";
 import type { CallRecord, CallSummary, VersionMeta } from "../lib/types";
@@ -40,6 +41,7 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
   return (
     <section className="border-b border-slate-200 px-4 py-4">
       <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Calls</h3>
+      {calls && calls.length > 0 && <CostSummary calls={calls} />}
       {calls === null ? (
         <p className="text-xs text-slate-400">Loading…</p>
       ) : calls.length === 0 ? (
@@ -66,6 +68,7 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
                   <span className="block text-xs text-slate-500">
                     {timeAgo(c.started_at)} · {c.turns} turns ·{" "}
                     {c.agent_version ? `v${c.agent_version}` : "unsaved draft"}
+                    {c.cost && ` · ${usd(c.cost.total)}`}
                   </span>
                 </span>
                 <Outcome endedBy={c.ended_by} />
@@ -75,6 +78,67 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
         </ul>
       )}
     </section>
+  );
+}
+
+function CostSummary({ calls }: { calls: CallSummary[] }) {
+  const cost = averageCost(calls);
+  if (!cost) return null;
+  return (
+    <div className="mb-3 rounded-md bg-slate-50 px-3 py-2 text-xs">
+      <div>
+        <span className="font-semibold text-slate-800">{usd(cost.average)}</span>{" "}
+        <span className="text-slate-600">average per call</span>
+      </div>
+      {cost.groups.length > 1 && (
+        <div className="mt-0.5 text-slate-600">
+          {cost.groups.map((g) => `${g.label} ${usd(g.average)} (${g.calls})`).join(" · ")}
+        </div>
+      )}
+      <div className="mt-0.5 text-slate-400">
+        Estimated at today's prices, over {cost.calls} of {calls.length} calls
+        {cost.calls < calls.length && " (older calls have no usage recorded)"}.
+      </div>
+    </div>
+  );
+}
+
+function CostBreakdown({ call }: { call: CallRecord }) {
+  const { usage, cost } = call;
+  if (!usage || !cost) {
+    return <p className="text-slate-500">No cost: this call was recorded before usage was metered.</p>;
+  }
+  const part = (value: number | null | undefined) => (value == null ? "no price for this model" : usd(value));
+  return (
+    <div>
+      <div className="mb-1 font-medium text-slate-700">
+        Cost <span className="font-semibold text-slate-900">{usd(cost.total)}</span>
+        <span className="font-normal text-slate-400"> estimated</span>
+      </div>
+      <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5">
+        {usage.llm && (
+          <>
+            <dt className="text-slate-600">
+              Model ({call.agent.model ?? "default"}): {usage.llm.calls} calls, {tokens(usage.llm.input_tokens)} tokens in
+              {usage.llm.cached_tokens > 0 && ` (${tokens(usage.llm.cached_tokens)} cached)`}, {tokens(usage.llm.output_tokens)} out
+            </dt>
+            <dd className="text-right">{part(cost.llm)}</dd>
+          </>
+        )}
+        {usage.stt && (
+          <>
+            <dt className="text-slate-600">Speech-to-text: {Math.round(usage.stt.seconds)} s</dt>
+            <dd className="text-right">{part(cost.stt)}</dd>
+          </>
+        )}
+        {usage.tts && (
+          <>
+            <dt className="text-slate-600">Text-to-speech: {usage.tts.characters.toLocaleString()} characters</dt>
+            <dd className="text-right">{part(cost.tts)}</dd>
+          </>
+        )}
+      </dl>
+    </div>
   );
 }
 
@@ -143,6 +207,7 @@ function CallDetail({ call, onBack, onSavedTest }: { call: CallRecord; onBack: (
             {error && <p className="mt-1 text-red-600">{error}</p>}
           </div>
         )}
+        <CostBreakdown call={call} />
         {collected.length > 0 && (
           <div>
             <div className="mb-1 font-medium text-slate-700">Collected</div>

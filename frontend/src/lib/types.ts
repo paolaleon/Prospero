@@ -122,6 +122,30 @@ export type CallEvent =
       problems: string[];
     };
 
+// What a call consumed (backend/usage.py), and its estimated cost in USD at
+// today's prices (backend/pricing.py, AD-19). Calls recorded before usage was
+// metered have neither.
+export interface LlmUsage {
+  calls: number;
+  input_tokens: number; // includes the cached ones
+  cached_tokens: number;
+  output_tokens: number;
+}
+
+export interface Usage {
+  llm?: LlmUsage;
+  tts?: { requests: number; characters: number };
+  stt?: { seconds: number };
+}
+
+export interface Cost {
+  llm?: number | null; // null: the model has no price
+  tts?: number;
+  stt?: number;
+  total: number;
+  complete: boolean;
+}
+
 export interface CallSummary {
   id: string;
   source: "test" | "production" | "mock";
@@ -133,9 +157,12 @@ export interface CallSummary {
   ended_by: "agent" | "caller" | null;
   final_node: string | null;
   turns: number;
+  model: string | null; // null: the default model
+  usage: Usage | null;
+  cost: Cost | null;
 }
 
-export interface CallRecord extends Omit<CallSummary, "turns" | "agent_name"> {
+export interface CallRecord extends Omit<CallSummary, "turns" | "agent_name" | "model"> {
   agent: Agent;
   collected: Record<string, unknown>;
   events: CallEvent[];
@@ -173,6 +200,8 @@ export interface TestRun {
   unused_turns?: number;
   events: CallEvent[];
   results: TestCheckResult[];
+  usage?: { replay: LlmUsage; grader: LlmUsage };
+  cost: { replay: number | null; grader: number | null; total: number; complete: boolean } | null;
 }
 
 export interface TestRunResult {
@@ -180,6 +209,7 @@ export interface TestRunResult {
   agent_version: number | null;
   passed: number;
   total: number;
+  cost: number; // all replays and their grading, USD
   runs: TestRun[];
 }
 

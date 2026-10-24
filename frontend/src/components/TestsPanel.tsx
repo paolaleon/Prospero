@@ -1,6 +1,7 @@
 import { Check, ChevronDown, ChevronRight, Loader2, Play, ShieldCheck, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { usd } from "../lib/cost";
 import { timeAgo } from "../lib/format";
 import { isDirty, useEditor } from "../lib/store";
 import type { Agent, RegressionTest, TestExpect, TestRun, TestRunResult } from "../lib/types";
@@ -279,7 +280,7 @@ function Score({ passed, total }: { passed: number; total: number }) {
 function Runs({ result }: { result: TestRunResult }) {
   return (
     <div className="space-y-2">
-      <Label>Latest run</Label>
+      <Label hint={`cost ${usd(result.cost)}, replays and grading`}>Latest run</Label>
       {result.runs.map((run, i) => (
         <RunDetail key={i} index={i + 1} run={run} />
       ))}
