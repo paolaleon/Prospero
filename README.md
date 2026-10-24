@@ -9,7 +9,7 @@ browser mic  ->  ElevenLabs STT  ->  OpenAI LLM  ->  ElevenLabs TTS  ->  browser
 - **Phase 1** — a visual editor for the node graph, with test calls placed from the browser.
 - **Phase 2** — an AI Copilot that builds agents from natural-language guidelines and improves them from call data.
 
-The reasoning behind the main design choices, and their known weaknesses, is in [DECISIONS.md](DECISIONS.md).
+The reasoning behind the main design choices, and their known weaknesses, is in [Solution.md](Solution.md).
 
 ## What the editor does
 

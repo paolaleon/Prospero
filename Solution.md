@@ -1,6 +1,6 @@
-# Architectural Decisions
+# Solution
 
-This file records the project's architectural decisions (ADs): decisions that are hard to undo and that shape how the system works. Most describe code that exists; an AD recorded ahead of its code says so. Each one is written to be defended from an AI product engineer's point of view:
+This file records the project's architectural decisions (ADs), grouped by phase: Phase 1, the agent editor and test calls, then Phase 2, ProsperO, the copilot. ADs are decisions that are hard to undo and that shape how the system works. Most describe code that exists; an AD recorded ahead of its code says so. Each one is written to be defended from an AI product engineer's point of view:
 
 - **Decision**: what we chose.
 - **Product argument**: why it helps the people building and testing agents.
@@ -9,6 +9,14 @@ This file records the project's architectural decisions (ADs): decisions that ar
 - **Cost of reversal**: how hard it would be to undo.
 - **Likely challenges**: what a reviewer is likely to push on, with an answer for each.
 - **Revisit when**: the signal that it's time to change it.
+
+The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
+
+---
+
+## Phase 1: the agent editor
+
+A UI to edit node-graph voice agents (Pipecat Flows) and place test calls.
 
 | AD | Architectural decision |
 |----|------------------------|
@@ -22,21 +30,10 @@ This file records the project's architectural decisions (ADs): decisions that ar
 | AD-8 | The frontend and backend are separate apps that only communicate over HTTP |
 | AD-9 | Every edit to an agent is a named, serialisable operation |
 | AD-10 | A transition without the data it requires is refused, and the call stays in its node |
-| AD-11 | ProsperO, the copilot, specialises in voice agents for the medical field |
-| AD-12 | Operations exist in Python and TypeScript, held identical by shared test cases |
-| AD-13 | ProsperO is a stateless tool loop on the backend that edits through operations and can't finish with errors |
-| AD-14 | ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step |
-| AD-15 | Every agent speaks English only, fixed in speech recognition, the voice and every node |
-| AD-16 | A call stuck in a node for two failures in a row is moved to a fallback by the runtime |
-| AD-17 | Every node gets a "no medical advice" rule from the runtime, whatever the persona says |
-| AD-18 | Recorded calls become regression tests, replayed as text through the real graph and LLM, several times each |
-| AD-19 | Calls record what they consumed, and cost is priced from it when read |
-
-The **Gaps to prepare for** section at the end isn't a set of decisions. It lists the open questions a reviewer is most likely to raise.
 
 ---
 
-## AD-1: The canvas layout is stored in the agent JSON
+### AD-1: The canvas layout is stored in the agent JSON
 
 **Decision.** Each node has an optional `position: {x, y}`. The voice runtime ignores it.
 
@@ -58,7 +55,7 @@ The **Gaps to prepare for** section at the end isn't a set of decisions. It list
 
 ---
 
-## AD-2: Validation rules live in one place, in the backend
+### AD-2: Validation rules live in one place, in the backend
 
 **Decision.** `validate_agent` is the only copy of the rules. The editor (`/api/validate`), the call request (`POST /start`, see AD-5) and every way of creating an `AgentBuilder` all use it. Each issue says how serious it is and which node and edge it belongs to.
 
@@ -86,7 +83,7 @@ The **Gaps to prepare for** section at the end isn't a set of decisions. It list
 
 ---
 
-## AD-3: `AgentBuilder` reports transitions through a callback
+### AD-3: `AgentBuilder` reports transitions through a callback
 
 **Decision.** `AgentBuilder` has an optional `on_transition` attribute: an async `(from_node, function, to_node, args)` listener. It's called each time a transition is taken, just before the next node starts. Whoever runs the call assigns it (`builder.on_transition = listener`), because the listener usually needs objects that only exist once the call has started; `bot.py` gives each call its own, bound to that call's recorder. If it fails, the error is logged and the call carries on.
 
@@ -108,7 +105,7 @@ The **Gaps to prepare for** section at the end isn't a set of decisions. It list
 
 ---
 
-## AD-4: Agents are stored as immutable versions in JSON files
+### AD-4: Agents are stored as immutable versions in JSON files
 
 **Decision.** A save never overwrites. Each one appends `backend/agents/{id}/versions/{n}.json`, which holds the agent plus `version`, `created_at`, a `message` and a `source` (`human`, `copilot` or `restore`). The latest version is the current agent. Rolling back appends a copy of an old version rather than deleting anything. A save sends the `base_version` it started from, and if someone saved in between, it's refused with `409`. All storage lives in `backend/store.py`, and `/api/agents` and `/api/agents/{id}/versions` sit on top of it.
 
@@ -139,7 +136,7 @@ The **Gaps to prepare for** section at the end isn't a set of decisions. It list
 
 ---
 
-## AD-5: A test call carries the agent definition with it
+### AD-5: A test call carries the agent definition with it
 
 **Decision.** The `/start` request body decides which agent a call runs (`store.resolve_call_agent`), in this order:
 
@@ -170,7 +167,7 @@ The editor sends the agent by reference (`agent_id` and `version`) when there ar
 
 ---
 
-## AD-6: Live call state reaches the browser over RTVI
+### AD-6: Live call state reaches the browser over RTVI
 
 **Decision.** `bot.py` sends two kinds of RTVI server message over the call's existing WebRTC connection:
 - `{"type": "flow.node", ...}`: once when the client is ready (with the start node), and after every transition (with `from_node`, `function` and the collected `args`). The editor uses these to light up the active node and the edges taken.
@@ -198,7 +195,7 @@ The live transcript is built from `call.event`, not from the SDK's own transcrip
 
 ---
 
-## AD-7: Every call is recorded with the agent it ran
+### AD-7: Every call is recorded with the agent it ran
 
 **Decision.** `bot.py` records each call on the server (`CallRecorder`) and writes it to `backend/calls/{id}.json` when the call ends, whether the agent hung up or the caller did. The record is self-contained:
 - **Agent:** a snapshot of the agent it ran, plus `agent_id` and `agent_version` (`null` for an unsaved draft).
@@ -232,7 +229,7 @@ Records are read through `/api/calls`. The client is told the call id when it co
 
 ---
 
-## AD-8: The frontend and backend are separate apps that only communicate over HTTP
+### AD-8: The frontend and backend are separate apps that only communicate over HTTP
 
 **Decision.** The editor lives in `frontend/` (React, TypeScript, React Flow) with its own dependencies, build and dev server. The backend serves JSON and the WebRTC call endpoints only, never UI files. The frontend finds the backend through one setting, `VITE_API_URL`. The Pipecat runner already allows cross-origin requests, so no backend changes were needed. The only contracts between the two are the HTTP API and the agent JSON format.
 
@@ -255,7 +252,7 @@ Records are read through `/api/calls`. The client is told the call id when it co
 
 ---
 
-## AD-9: Every edit to an agent is a named, serialisable operation
+### AD-9: Every edit to an agent is a named, serialisable operation
 
 **Decision.** The editor's draft only changes through `applyOp(agent, op)` in `frontend/src/lib/operations/`. That function is pure and is the single place where an agent is modified. An `Op` is plain data: `addNode`, `renameNode`, `updateEdge`, `moveNodes` and so on, each with a readable label from `describeOp`. The canvas, the inspector, JSON import and undo/redo all dispatch operations through the store (`frontend/src/lib/store.ts`). Operations whose meaning spans the graph handle every reference: renaming a node rewrites the start node and every edge that targets it, and deleting a node keeps the transitions that pointed at it but clears their target, so validation flags each one.
 
@@ -284,7 +281,7 @@ Records are read through `/api/calls`. The client is told the call id when it co
 
 ---
 
-## AD-10: A transition without the data it requires is refused, and the call stays in its node
+### AD-10: A transition without the data it requires is refused, and the call stays in its node
 
 **Decision.** Before taking a transition, its handler (`check_args` in `backend/agent_builder/builder.py`) checks the arguments the LLM supplied against the edge's own schema:
 - every **required** field must be present and not blank;
@@ -318,7 +315,25 @@ If a check fails, the transition is **refused**:
 
 ---
 
-## AD-11: ProsperO, the copilot, specialises in voice agents for the medical field
+## Phase 2: ProsperO
+
+An AI copilot that builds and edits medical voice agents from prompts, plus the runtime safeguards, regression tests and cost tracking that let agents be improved from call data.
+
+| AD | Architectural decision |
+|----|------------------------|
+| AD-11 | ProsperO, the copilot, specialises in voice agents for the medical field |
+| AD-12 | Operations exist in Python and TypeScript, held identical by shared test cases |
+| AD-13 | ProsperO is a stateless tool loop on the backend that edits through operations and can't finish with errors |
+| AD-14 | ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step |
+| AD-15 | Every agent speaks English only, fixed in speech recognition, the voice and every node |
+| AD-16 | A call stuck in a node for two failures in a row is moved to a fallback by the runtime |
+| AD-17 | Every node gets a "no medical advice" rule from the runtime, whatever the persona says |
+| AD-18 | Recorded calls become regression tests, replayed as text through the real graph and LLM, several times each |
+| AD-19 | Calls record what they consumed, and cost is priced from it when read |
+
+---
+
+### AD-11: ProsperO, the copilot, specialises in voice agents for the medical field
 
 **Decision.** ProsperO, the Phase 2 copilot that builds and edits agents from natural-language prompts, is designed for **voice agents used by medical practices**: clinics and practices handling scheduling, rescheduling and cancellations, patient intake, reminders, prescription refill requests, billing questions, and routing urgent calls. It's being built on the `phase-2-copilot` branch, and this decision shapes it from the start.
 
@@ -356,7 +371,7 @@ The domain shows up in what ProsperO does by default when it builds an agent:
 
 ---
 
-## AD-12: Operations exist in Python and TypeScript, held identical by shared test cases
+### AD-12: Operations exist in Python and TypeScript, held identical by shared test cases
 
 **Decision.** The operations from AD-9 now have two implementations:
 - **TypeScript** (`frontend/src/lib/operations/`), which the editor uses for people's edits, undo/redo and previews;
@@ -388,7 +403,7 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 
 ---
 
-## AD-13: ProsperO is a stateless tool loop on the backend that edits through operations and can't finish with errors
+### AD-13: ProsperO is a stateless tool loop on the backend that edits through operations and can't finish with errors
 
 **Decision.** ProsperO (`backend/prospero/`) runs one turn per user message at `POST /api/copilot`:
 - **Input:** the agent as it currently stands (none for a new agent), the chat so far, and the new message. The server keeps nothing between turns.
@@ -426,7 +441,7 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 
 ---
 
-## AD-14: ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step
+### AD-14: ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step
 
 **Decision.** ProsperO never edits the draft directly. Its edits form a **proposal** held next to the draft in the editor store (`frontend/src/lib/store.ts`):
 - **While it builds,** each streamed edit is applied to a copy of the draft with the same `applyOp` as people's edits (AD-12). The canvas shows the proposal read-only, with nodes marked **New**, **Changed** or **Removed** (removed ones faded in place), compared with the draft by `diffAgents` (`frontend/src/lib/diff.ts`).
@@ -461,7 +476,7 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 
 ---
 
-## AD-15: Every agent speaks English only, fixed in speech recognition, the voice and every node
+### AD-15: Every agent speaks English only, fixed in speech recognition, the voice and every node
 
 **Decision.** Agents speak English, and only English. There's no language setting.
 - **Speech recognition and the voice are fixed to English** (`bot.py`). Nothing detects the caller's language.
@@ -498,7 +513,7 @@ Both are organised the same way: one entry per operation, in a file per area (`a
 
 ---
 
-## AD-16: A call stuck in a node for two failures in a row is moved to a fallback by the runtime
+### AD-16: A call stuck in a node for two failures in a row is moved to a fallback by the runtime
 
 **Decision.** Refusing transitions without the data they require (AD-10) could leave a call looping on the same node until the caller hung up. Now the runtime counts **consecutive refused transitions in the current node** (`backend/agent_builder/builder.py`): required data missing, or a value that isn't allowed. The count resets when the call moves to another node. On the **second** refusal in a row, the call is moved to the agent's **fallback**, without asking the LLM:
 - **The agent's own fallback node**, if `fallback_node` is set (in Agent settings, "When the call gets stuck", or by ProsperO, which gives medical agents a short "handoff to staff" end node).
@@ -534,7 +549,7 @@ Each fallback is a `fallback` event in the call record (from which node, why, to
 
 ---
 
-## AD-17: Every node gets a "no medical advice" rule from the runtime, whatever the persona says
+### AD-17: Every node gets a "no medical advice" rule from the runtime, whatever the persona says
 
 **Decision.** The builder adds a fixed medical safety rule to the role message of **every node** (`backend/agent_builder/medical.py`, applied in `AgentBuilder._role_message`). It goes after the persona, or after a node's own persona override, and before the English rule (AD-15). The built-in fallback gets it too. The rule: never diagnose, interpret symptoms, or suggest treatments, remedies, home care or medications (including over-the-counter ones and doses), even if the caller insists. If asked, say you can't give medical advice and offer to book or pass the question to staff. If it sounds urgent, tell the caller to hang up and call emergency services. It can't be turned off per agent.
 
@@ -567,7 +582,7 @@ ProsperO's prompt no longer asks the persona to say it; it only tells ProsperO n
 
 ---
 
-## AD-18: Recorded calls become regression tests, replayed as text through the real graph and LLM, several times each
+### AD-18: Recorded calls become regression tests, replayed as text through the real graph and LLM, several times each
 
 **Decision.** Any recorded call can be saved as a **test** of its agent (`backend/regression/`, stored in `agents/{id}/tests/`, a Tests tab in the editor). A test is:
 - **What the caller said**, in order, taken from the call and editable.
@@ -609,7 +624,7 @@ The grader is a separate model call **after** the replay, with a fixed rubric. I
 
 ---
 
-## AD-19: Calls record what they consumed, and cost is priced from it when read
+### AD-19: Calls record what they consumed, and cost is priced from it when read
 
 **Decision.** Every call record now carries a `usage` block (`backend/usage.py`):
 - **Model:** number of calls, input tokens (and how many were cached), output tokens. Pipecat reports these for each model call.
