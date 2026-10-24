@@ -2,9 +2,10 @@ import { ArrowLeft, Bot, FlaskConical, PhoneIncoming, RotateCcw, Sparkles, User 
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useCall } from "../lib/call";
+import { averageCost, tokens, usd } from "../lib/cost";
 import { timeAgo } from "../lib/format";
 import { isDirty, useEditor } from "../lib/store";
-import type { CallRecord, CallSummary, VersionMeta } from "../lib/types";
+import type { CallOutcome, CallRecord, CallSummary, VersionMeta } from "../lib/types";
 import Transcript from "./Transcript";
 
 export default function HistoryPanel({
@@ -40,6 +41,8 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
   return (
     <section className="border-b border-slate-200 px-4 py-4">
       <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Calls</h3>
+      {calls && calls.length > 0 && <OutcomeSummary calls={calls} />}
+      {calls && calls.length > 0 && <CostSummary calls={calls} />}
       {calls === null ? (
         <p className="text-xs text-slate-400">Loading…</p>
       ) : calls.length === 0 ? (
@@ -57,6 +60,8 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
                   <span className="block truncate text-sm">
                     {c.final_node === "built_in_fallback" ? (
                       "Polite ending (stuck)"
+                    ) : c.final_node === "built_in_end" ? (
+                      "Agent ended the call"
                     ) : (
                       <>
                         Ended at <span className="font-mono">{c.final_node}</span>
@@ -66,9 +71,10 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
                   <span className="block text-xs text-slate-500">
                     {timeAgo(c.started_at)} · {c.turns} turns ·{" "}
                     {c.agent_version ? `v${c.agent_version}` : "unsaved draft"}
+                    {c.cost && ` · ${usd(c.cost.total)}`}
                   </span>
                 </span>
-                <Outcome endedBy={c.ended_by} />
+                <Outcome outcome={c.outcome} />
               </button>
             </li>
           ))}
@@ -78,12 +84,95 @@ function CallList({ onOpen }: { onOpen: (id: string) => void }) {
   );
 }
 
-function Outcome({ endedBy }: { endedBy: CallSummary["ended_by"] }) {
-  // "caller" before an end node usually means a drop-off: the most useful signal to iterate on.
-  return endedBy === "agent" ? (
-    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">completed</span>
-  ) : (
-    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">caller hung up</span>
+function CostSummary({ calls }: { calls: CallSummary[] }) {
+  const cost = averageCost(calls);
+  if (!cost) return null;
+  return (
+    <div className="mb-3 rounded-md bg-slate-50 px-3 py-2 text-xs">
+      <div>
+        <span className="font-semibold text-slate-800">{usd(cost.average)}</span>{" "}
+        <span className="text-slate-600">average per call</span>
+      </div>
+      {cost.groups.length > 1 && (
+        <div className="mt-0.5 text-slate-600">
+          {cost.groups.map((g) => `${g.label} ${usd(g.average)} (${g.calls})`).join(" · ")}
+        </div>
+      )}
+      <div className="mt-0.5 text-slate-400">
+        Estimated at today's prices, over {cost.calls} of {calls.length} calls
+        {cost.calls < calls.length && " (older calls have no usage recorded)"}.
+      </div>
+    </div>
+  );
+}
+
+function CostBreakdown({ call }: { call: CallRecord }) {
+  const { usage, cost } = call;
+  if (!usage || !cost) {
+    return <p className="text-slate-500">No cost: this call was recorded before usage was metered.</p>;
+  }
+  const part = (value: number | null | undefined) => (value == null ? "no price for this model" : usd(value));
+  return (
+    <div>
+      <div className="mb-1 font-medium text-slate-700">
+        Cost <span className="font-semibold text-slate-900">{usd(cost.total)}</span>
+        <span className="font-normal text-slate-400"> estimated</span>
+      </div>
+      <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5">
+        {usage.llm && (
+          <>
+            <dt className="text-slate-600">
+              Model ({call.agent.model ?? "default"}): {usage.llm.calls} calls, {tokens(usage.llm.input_tokens)} tokens in
+              {usage.llm.cached_tokens > 0 && ` (${tokens(usage.llm.cached_tokens)} cached)`}, {tokens(usage.llm.output_tokens)} out
+            </dt>
+            <dd className="text-right">{part(cost.llm)}</dd>
+          </>
+        )}
+        {usage.stt && (
+          <>
+            <dt className="text-slate-600">Speech-to-text: {Math.round(usage.stt.seconds)} s</dt>
+            <dd className="text-right">{part(cost.stt)}</dd>
+          </>
+        )}
+        {usage.tts && (
+          <>
+            <dt className="text-slate-600">Text-to-speech: {usage.tts.characters.toLocaleString()} characters</dt>
+            <dd className="text-right">{part(cost.tts)}</dd>
+          </>
+        )}
+      </dl>
+    </div>
+  );
+}
+
+const OUTCOMES: Record<CallOutcome, { label: string; tone: string }> = {
+  completed: { label: "completed", tone: "bg-emerald-50 text-emerald-700" },
+  could_not_help: { label: "couldn't help", tone: "bg-slate-100 text-slate-700" },
+  stuck: { label: "stuck", tone: "bg-red-50 text-red-700" },
+  // Hanging up before the call finished usually means a drop-off: the most useful signal to iterate on.
+  caller_hung_up: { label: "caller hung up", tone: "bg-amber-50 text-amber-700" },
+};
+
+function Outcome({ outcome }: { outcome: CallOutcome }) {
+  const { label, tone } = OUTCOMES[outcome] ?? OUTCOMES.caller_hung_up;
+  return <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${tone}`}>{label}</span>;
+}
+
+/** How this agent's calls ended, as counts: the outcome metric (D-20). */
+function OutcomeSummary({ calls }: { calls: CallSummary[] }) {
+  const counts = new Map<CallOutcome, number>();
+  for (const c of calls) counts.set(c.outcome, (counts.get(c.outcome) ?? 0) + 1);
+  const order: CallOutcome[] = ["completed", "could_not_help", "stuck", "caller_hung_up"];
+  return (
+    <div className="mb-2 flex flex-wrap gap-1.5 text-xs">
+      {order
+        .filter((o) => counts.get(o))
+        .map((o) => (
+          <span key={o} className={`rounded px-1.5 py-0.5 font-medium ${OUTCOMES[o].tone}`}>
+            {counts.get(o)} {OUTCOMES[o].label}
+          </span>
+        ))}
+    </div>
   );
 }
 
@@ -121,7 +210,7 @@ function CallDetail({ call, onBack, onSavedTest }: { call: CallRecord; onBack: (
             {seconds !== null && ` · ${seconds}s`}
           </div>
         </div>
-        <Outcome endedBy={call.ended_by} />
+        <Outcome outcome={call.outcome} />
       </div>
 
       <div className="space-y-3 border-b border-slate-100 px-4 py-3 text-xs">
@@ -143,6 +232,7 @@ function CallDetail({ call, onBack, onSavedTest }: { call: CallRecord; onBack: (
             {error && <p className="mt-1 text-red-600">{error}</p>}
           </div>
         )}
+        <CostBreakdown call={call} />
         {collected.length > 0 && (
           <div>
             <div className="mb-1 font-medium text-slate-700">Collected</div>

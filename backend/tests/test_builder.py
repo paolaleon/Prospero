@@ -123,7 +123,7 @@ def test_a_failing_refusal_listener_does_not_break_the_call():
 
 
 
-# ---- English only (AD-15) ----------------------------------------------------------
+# ---- English only (D-15) ----------------------------------------------------------
 def role_message(builder, data, node_index=0):
     return builder._make_node(builder._nodes_by_name[data["nodes"][node_index]["name"]])["role_message"]
 
@@ -148,7 +148,7 @@ def test_old_agents_with_a_languages_list_still_load():
     assert "speak only English" in role_message(AgentBuilder.from_dict(data), data)
 
 
-# ---- recovering from a stuck node (AD-16) ----------------------------------------
+# ---- recovering from a stuck node (D-16) ----------------------------------------
 from agent_builder.builder import BUILT_IN_FALLBACK
 
 
@@ -217,21 +217,67 @@ def test_the_built_in_ending_speaks_english():
 
 
 
-# ---- medical safety (AD-17) -----------------------------------------------------------
-from agent_builder.medical import NO_MEDICAL_ADVICE_RULE
+# ---- medical safety (D-17) -----------------------------------------------------------
+from agent_builder.medical import NO_MEDICAL_ADVICE_RULE, PATIENT_PRIVACY_RULE
 
 
-def test_every_node_gets_the_no_medical_advice_rule_whatever_the_persona():
+def test_every_node_gets_the_safety_rules_whatever_the_persona():
     data = json.loads(EXAMPLE.read_text())
     data["persona"] = "You are a friendly voice assistant."  # says nothing about advice
     data["nodes"][1]["role_message"] = "Be extra brief."  # a per-node override
     builder = AgentBuilder.from_dict(data)
-    for node in builder.config.nodes:
-        assert NO_MEDICAL_ADVICE_RULE in builder._make_node(node)["role_message"]
-    assert NO_MEDICAL_ADVICE_RULE in builder.fallback_node_config()["role_message"]
+    for rule in (NO_MEDICAL_ADVICE_RULE, PATIENT_PRIVACY_RULE):
+        for node in builder.config.nodes:
+            assert rule in builder._make_node(node)["role_message"]
+        assert rule in builder.fallback_node_config()["role_message"]
 
 
 def test_the_rule_comes_after_the_persona():
     data = json.loads(EXAMPLE.read_text())
     message = AgentBuilder.from_dict(data).build_initial_node()["role_message"]
-    assert message.index(data["persona"]) < message.index("Medical safety:") < message.index("Language:")
+    order = [data["persona"], "Medical safety:", "Patient privacy:", "Language:"]
+    assert [message.index(part) for part in order] == sorted(message.index(part) for part in order)
+
+
+# ---- the agent ending the call (D-20) -------------------------------------------------
+from agent_builder.builder import BUILT_IN_END
+
+
+def end_call(node_config):
+    return next(f for f in node_config["functions"] if f.name == "end_call")
+
+
+def test_every_node_but_end_nodes_can_end_the_call():
+    data = json.loads(EXAMPLE.read_text())
+    builder = AgentBuilder.from_dict(data)
+    for node in builder.config.nodes:
+        names = [f.name for f in builder._make_node(node)["functions"]]
+        assert ("end_call" in names) == (not node.end), node.name
+
+
+def test_ending_the_call_says_goodbye_hangs_up_and_is_reported():
+    builder = AgentBuilder.from_json(EXAMPLE)
+    ended = []
+
+    async def on_end(from_node, reason):
+        ended.append((from_node, reason))
+
+    builder.on_end = on_end
+    start = builder.build_initial_node()
+    result, next_node = asyncio.run(end_call(start).handler({"reason": "cannot_help"}, SimpleNamespace(state={})))
+    assert next_node["name"] == BUILT_IN_END and next_node["functions"] == []
+    assert next_node["post_actions"] == [{"type": "end_conversation"}]
+    assert ended == [(start["name"], "cannot_help")]
+    assert builder.current_node == BUILT_IN_END
+
+
+def test_an_unknown_reason_counts_as_the_caller_being_done():
+    builder = AgentBuilder.from_json(EXAMPLE)
+    ended = []
+
+    async def on_end(from_node, reason):
+        ended.append(reason)
+
+    builder.on_end = on_end
+    asyncio.run(end_call(builder.build_initial_node()).handler({}, SimpleNamespace(state={})))
+    assert ended == ["caller_done"]

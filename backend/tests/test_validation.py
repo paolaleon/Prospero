@@ -106,6 +106,11 @@ def test_invalid_function_name(fn):
     assert ("error", msg, "start", 0) in issues(edge(agent(), function=fn))
 
 
+def test_end_call_is_reserved():
+    msg = "'end_call' is reserved: every node can already end the call. Use another name."
+    assert ("error", msg, "start", 0) in issues(edge(agent(), function="end_call"))
+
+
 def test_duplicate_function_name():
     data = agent()
     data["nodes"][0]["edges"].append({"function": "finish", "description": "Again.", "target": "done"})
@@ -184,7 +189,7 @@ def test_a_new_rule_only_needs_a_decorator():
         validation._NODE_RULES.remove(node_names_are_snake_case)
 
 
-# ---- fallback node (AD-16) -----------------------------------------------------------
+# ---- fallback node (D-16) -----------------------------------------------------------
 def test_fallback_node_must_exist():
     assert ("error", "Fallback node 'nope' is not a defined node.", None, None) in issues(agent(fallback_node="nope"))
 

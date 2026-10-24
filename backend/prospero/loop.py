@@ -127,7 +127,7 @@ def _issues(agent: dict) -> list[dict]:
 
 
 def _without_positions(agent: dict) -> dict:
-    # Canvas positions mean nothing to the LLM and only cost tokens (AD-1).
+    # Canvas positions mean nothing to the LLM and only cost tokens (D-1).
     stripped = copy.deepcopy(agent)
     for node in stripped.get("nodes", []):
         node.pop("position", None)

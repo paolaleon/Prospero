@@ -10,7 +10,7 @@ export type LiveState = "active" | "visited";
 export type AgentNodeData = {
   node: AgentNode;
   isStart: boolean;
-  /** Where the call goes when it gets stuck (AD-16). */
+  /** Where the call goes when it gets stuck (D-16). */
   isFallback?: boolean;
   issues: Issue[];
   selectedEdge: number | null;

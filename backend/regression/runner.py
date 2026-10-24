@@ -10,9 +10,12 @@ from typing import Awaitable, Callable, Optional
 
 from loguru import logger
 
+import pricing
 import store
+from usage import empty_llm
 
-from .grader import MEDICAL_SAFETY_CHECK, grade_with_openai
+from . import grader
+from .grader import ALWAYS_CHECKED, grade_with_openai
 from .replay import replay as replay_text
 from .scenario import evaluate
 
@@ -24,7 +27,7 @@ MAX_REPEATS = 5
 _slots = asyncio.Semaphore(6)
 
 Replay = Callable[..., Awaitable[dict]]
-Grade = Callable[[dict, list[str]], Awaitable[list[dict]]]
+Grade = Callable[[dict, list[str], dict], Awaitable[list[dict]]]  # (record, checks, llm usage to add to)
 
 
 async def run(
@@ -36,18 +39,25 @@ async def run(
     replay: Replay = replay_text,
     grade: Grade = grade_with_openai,
 ) -> dict:
-    """{"at", "agent_version", "passed", "total", "runs": [...]}, one run per replay."""
-    checks = [MEDICAL_SAFETY_CHECK, *test["expect"].get("checks", [])]
+    """{"at", "agent_version", "passed", "total", "cost", "runs": [...]}, one run per replay.
+
+    Each run carries its usage and estimated cost: the replay's LLM calls, and
+    the grader's (D-19)."""
+    checks = [*ALWAYS_CHECKED, *test["expect"].get("checks", [])]
 
     async def once() -> dict:
+        grading = empty_llm()
         async with _slots:
             try:
                 record = await replay(agent, test["caller_turns"], agent_id=agent_id, version=version)
-                grades = await grade(record, checks)
+                grades = await grade(record, checks, grading)
             except Exception as e:
                 logger.exception("Replay failed")
-                return {"passed": False, "error": str(e), "events": [], "results": []}
+                return {"passed": False, "error": str(e), "events": [], "results": [], "cost": None}
         results = evaluate(test, record, grades)
+        replay_llm = (record.get("usage") or {}).get("llm") or empty_llm()
+        replay_cost = pricing.llm_cost(replay_llm, pricing.agent_model(agent))
+        grader_cost = pricing.llm_cost(grading, grader.model())
         return {
             "passed": all(r["passed"] for r in results),
             "error": None,
@@ -56,6 +66,13 @@ async def run(
             "unused_turns": record.get("unused_turns", 0),
             "events": record["events"],
             "results": results,
+            "usage": {"replay": replay_llm, "grader": grading},
+            "cost": {
+                "replay": replay_cost,
+                "grader": grader_cost,
+                "total": (replay_cost or 0) + (grader_cost or 0),
+                "complete": replay_cost is not None and grader_cost is not None,
+            },
         }
 
     runs = await asyncio.gather(*(once() for _ in range(repeats)))
@@ -64,5 +81,6 @@ async def run(
         "agent_version": version,
         "passed": sum(1 for r in runs if r["passed"]),
         "total": repeats,
+        "cost": sum((r["cost"] or {}).get("total", 0) for r in runs),
         "runs": runs,
     }

@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
+import pricing
 import prospero
 import regression
 import store
@@ -79,6 +80,12 @@ class CopilotTurn(BaseModel):
     agent: Optional[dict] = None  # the agent as it stands; none for a brand-new one
     history: list[dict] = []      # earlier messages: [{"role": "user"|"assistant", "content": "..."}]
     message: str
+
+
+def _priced(call: dict) -> dict:
+    """A call record (or summary) with its estimated cost, from its usage and today's prices (D-19)."""
+    model = pricing.agent_model(call["agent"]) if "agent" in call else call.get("model") or pricing.DEFAULT_MODEL
+    return {**call, "cost": pricing.cost(call.get("usage"), model)}
 
 
 def _with_issues(agent_id: str, record: dict) -> dict:
@@ -160,7 +167,7 @@ def register_routes(app: FastAPI) -> None:
             raise http_error(e)
         return _with_issues(agent_id, record)
 
-    # -- regression tests (AD-18) --
+    # -- regression tests (D-18) --
     @app.get("/api/agents/{agent_id}/tests")
     async def list_tests(agent_id: str):
         try:
@@ -216,7 +223,7 @@ def register_routes(app: FastAPI) -> None:
             raise http_error(e)
         if not 1 <= req.repeats <= regression.runner.MAX_REPEATS:
             raise HTTPException(400, f"Repeats must be between 1 and {regression.runner.MAX_REPEATS}.")
-        # Same rule as a call: an agent with errors doesn't run (AD-2).
+        # Same rule as a call: an agent with errors doesn't run (D-2).
         issues = issues_json(agent)
         if any(i["severity"] == "error" for i in issues):
             return JSONResponse({"detail": "Agent has errors.", "issues": issues}, status_code=422)
@@ -230,12 +237,12 @@ def register_routes(app: FastAPI) -> None:
     # -- calls --
     @app.get("/api/calls")
     async def list_calls(agent_id: Optional[str] = None):
-        return store.list_calls(agent_id)
+        return [_priced(c) for c in store.list_calls(agent_id)]
 
     @app.get("/api/calls/{call_id}")
     async def get_call(call_id: str):
         try:
-            return store.get_call(call_id)
+            return _priced(store.get_call(call_id))
         except (store.NotFound, ValueError) as e:
             raise http_error(e)
 

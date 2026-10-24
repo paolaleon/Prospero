@@ -52,7 +52,9 @@ from pipecat_flows import FlowManager
 import api
 import store
 from agent_builder import AgentBuilder
+from agent_builder.builder import BUILT_IN_END
 from call_record import CallRecorder
+from usage import UsageMeter
 
 # Load .env next to this file, so the bot runs the same from the repo root or backend/.
 load_dotenv(Path(__file__).parent / ".env", override=True)
@@ -90,7 +92,7 @@ async def run_bot(
     config = builder.config
     logger.info(f"Starting '{config.name}' with {len(config.nodes)} nodes (call {recorder.call_id})")
 
-    # Every agent speaks English (AD-15): speech in and out is fixed to it.
+    # Every agent speaks English (D-15): speech in and out is fixed to it.
     stt = ElevenLabsRealtimeSTTService(
         api_key=os.environ["ELEVENLABS_API_KEY"],
         settings=ElevenLabsRealtimeSTTService.Settings(language="en"),
@@ -120,8 +122,13 @@ async def run_bot(
         await notify_event(recorder.fallback(from_node, reason, to_node))
         await notify_node(to_node, from_node=from_node, function="fallback", args={})
 
+    async def on_end(from_node: str, reason: str) -> None:
+        await notify_event(recorder.ended(from_node, reason))
+        await notify_node(BUILT_IN_END, from_node=from_node, function="end_call", args={"reason": reason})
+
     builder.on_transition = on_transition
     builder.on_fallback = on_fallback
+    builder.on_end = on_end
     builder.on_transition_refused = on_transition_refused
 
     context = LLMContext()
@@ -132,6 +139,10 @@ async def run_bot(
         ),
     )
 
+    # After the TTS, the meter sees the usage both the LLM and the TTS report.
+    meter = UsageMeter()
+    recorder.usage, recorder.speech = meter.usage, True
+
     pipeline = Pipeline(
         [
             transport.input(),
@@ -139,6 +150,7 @@ async def run_bot(
             context_aggregator.user(),
             llm,
             tts,
+            meter,
             transport.output(),
             context_aggregator.assistant(),
         ]

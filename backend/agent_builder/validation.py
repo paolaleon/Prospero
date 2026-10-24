@@ -66,7 +66,7 @@ class Context:
             for edge in node.get("edges") or []:
                 if edge.get("target") in ctx.known:
                     ctx.graph[node["name"]].append(edge["target"])
-        # The runtime can send a call to the fallback node from anywhere (AD-16).
+        # The runtime can send a call to the fallback node from anywhere (D-16).
         ctx.reachable = _reachable(ctx.graph, data.get("initial_node"))
         if data.get("fallback_node") in ctx.known:
             ctx.reachable |= _reachable(ctx.graph, data["fallback_node"])
@@ -219,12 +219,21 @@ def node_is_not_a_dead_end(_ctx: Context, node: dict) -> Issues:
 
 
 # ---- edge rules --------------------------------------------------------------------
+# Every node that isn't an end node gets this function from the runtime (D-20).
+END_CALL_FUNCTION = "end_call"
+
+
 @edge_rule
 def function_name_is_valid_and_unique(_ctx: Context, node: dict, index: int, edge: dict) -> Issues:
     fn = edge.get("function") or ""
     if not FUNCTION_NAME_RE.match(fn):
         yield error(
             f"Transition {_label(edge, index)}: function name must be 1-64 letters, digits, '_' or '-'.",
+            node=node["name"], edge=index,
+        )
+    elif fn == END_CALL_FUNCTION:
+        yield error(
+            f"'{END_CALL_FUNCTION}' is reserved: every node can already end the call. Use another name.",
             node=node["name"], edge=index,
         )
     elif any(e.get("function") == fn for e in node["edges"][:index]):

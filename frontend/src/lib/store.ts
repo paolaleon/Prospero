@@ -248,7 +248,7 @@ export const useEditor = create<EditorState>((set, get) => {
         relayoutProposal();
       } catch (e) {
         // The backend applied this edit successfully, so a failure here means
-        // the two implementations disagree (AD-12): surface it, don't hide it.
+        // the two implementations disagree (D-12): surface it, don't hide it.
         set({ proposal: { ...proposal, status: "error", error: `Couldn't show an edit: ${(e as Error).message}` } });
       }
     },

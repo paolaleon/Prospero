@@ -35,6 +35,7 @@ from pipecat_flows import FlowManager
 
 from agent_builder import AgentBuilder
 from call_record import CallRecorder
+from usage import UsageMeter
 
 # The agent has finished answering when nothing is running and nothing has
 # happened for this long (a transition starts the next node's reply quickly).
@@ -95,16 +96,22 @@ async def replay(
     async def on_fallback(from_node, reason, to_node):
         recorder.fallback(from_node, reason, to_node)
 
+    async def on_end(from_node, reason):
+        recorder.ended(from_node, reason)
+
     builder.on_transition = on_transition
     builder.on_transition_refused = on_refused
     builder.on_fallback = on_fallback
+    builder.on_end = on_end
 
     llm = OpenAILLMService(api_key=os.environ["OPENAI_API_KEY"], model=builder.config.model)
     context_aggregator = LLMContextAggregatorPair(LLMContext())
     activity = _Activity()
+    meter = UsageMeter(tts=False)  # text only: no speech to pay for
+    recorder.usage = meter.usage
     worker = PipelineWorker(
-        Pipeline([context_aggregator.user(), llm, activity, context_aggregator.assistant()]),
-        params=PipelineParams(),
+        Pipeline([context_aggregator.user(), llm, activity, meter, context_aggregator.assistant()]),
+        params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
     )
     flow_manager = FlowManager(llm=llm, context_aggregator=context_aggregator, worker=worker)
 
