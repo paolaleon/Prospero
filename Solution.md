@@ -364,7 +364,7 @@ An AI copilot that builds and edits medical voice agents from prompts, plus the 
 | D-14 | ProsperO's work is a proposal over the draft, reviewed on the canvas and accepted as one step |
 | D-15 | Every agent speaks English only, fixed in speech recognition, the voice and every node |
 | D-16 | A call stuck in a node for two failures in a row is moved to a fallback by the runtime |
-| D-17 | Every node gets a "no medical advice" rule from the runtime, whatever the persona says |
+| D-17 | Every node gets the product's safety rules from the runtime, no medical advice and patient privacy, whatever the persona says |
 | D-18 | Recorded calls become regression tests, replayed as text through the real graph and LLM, several times each |
 | D-19 | Calls record what they consumed, and cost is priced from it when read |
 
@@ -586,21 +586,25 @@ Each fallback is a `fallback` event in the call record (from which node, why, to
 
 ---
 
-### D-17: Every node gets a "no medical advice" rule from the runtime, whatever the persona says
+### D-17: Every node gets the product's safety rules from the runtime, no medical advice and patient privacy, whatever the persona says
 
-**Decision.** The builder adds a fixed medical safety rule to the role message of **every node** (`backend/agent_builder/medical.py`, applied in `AgentBuilder._role_message`). It goes after the persona, or after a node's own persona override, and before the English rule (D-15). The built-in fallback gets it too. The rule: never diagnose, interpret symptoms, or suggest treatments, remedies, home care or medications (including over-the-counter ones and doses), even if the caller insists. If asked, say you can't give medical advice and offer to book or pass the question to staff. If it sounds urgent, tell the caller to hang up and call emergency services. It can't be turned off per agent.
+**Decision.** The builder adds two fixed safety rules to the role message of **every node** (`backend/agent_builder/medical.py`, applied in `AgentBuilder._role_message`). They go after the persona, or after a node's own persona override, and before the English rule (D-15). The built-in fallback gets them too. Neither can be turned off per agent.
+- **No medical advice:** never diagnose, interpret symptoms, or suggest treatments, remedies, home care or medications (including over-the-counter ones and doses), even if the caller insists. If asked, say you can't give medical advice and offer to book or pass the question to staff. If it sounds urgent, tell the caller to hang up and call emergency services.
+- **Patient privacy:** never share or confirm anything about anyone other than the caller (whether they're a patient, their appointments, their details), even for a relative or when it's urgent. Offer to help with the caller's own matters, or suggest the other person contacts the clinic. Taking details from the caller to book for someone else is fine.
 
-ProsperO's prompt no longer asks the persona to say it; it only tells ProsperO not to write anything that contradicts it.
+ProsperO's prompt doesn't ask personas to repeat these rules; it tells ProsperO not to write anything that contradicts them. Regression tests check both on every replay (D-18).
 
 **Product argument.**
-- **The product is medical voice agents (D-11), so this is the product's floor, not an agent setting.** A clinic that builds an agent by hand, or edits ProsperO's persona, can't end up with one that gives health advice.
-- **It came from a real call.** A hand-made agent with a generic persona told a caller with a toothache to rinse with salt water and take painkillers. The medical defaults lived only in personas ProsperO wrote, so any other agent had none.
-- **Clinics own fewer risks.** Advice on a phone line is a liability for the clinic; "I can't advise, let me book you in" is also a conversion to an appointment.
+- **The product is medical voice agents (D-11), so these are the product's floor, not agent settings.** A clinic that builds an agent by hand, or edits ProsperO's persona, can't end up with one that gives health advice or discusses other patients.
+- **The medical rule came from a real call.** A hand-made agent with a generic persona told a caller with a toothache to rinse with salt water and take painkillers. The medical defaults lived only in personas ProsperO wrote, so any other agent had none.
+- **The privacy rule makes declining a principle, not an accident.** Without it, agents declined to discuss another patient only because they "can't access the schedule", and one offered to "check that for you" first. With it, in the same three replays, the agent declined each time "for privacy reasons". That still holds once agents are connected to real scheduling data.
+- **Clinics own fewer risks.** Advice on a phone line, or confirming a stranger's appointment, is a liability for the clinic; "I can't advise, let me book you in" is also a conversion to an appointment.
 
 **AI angle.**
-- **Defaults that live in generated text are suggestions; defaults in the runtime are guarantees of presence.** The rule is always in the context, on every node, independent of who wrote the agent.
+- **Defaults that live in generated text are suggestions; defaults in the runtime are guarantees of presence.** The rules are always in the context, on every node, independent of who wrote the agent.
 - **It's still a prompt.** It strongly lowers the chance of advice; it doesn't make it impossible. A deterministic check on what the agent says (a filter before the voice) would be the backstop; see the alternatives.
-- **Placement matters:** after the persona, so it's read as an overriding rule rather than buried in it, and on every node, because Flows replaces the role message on each transition.
+- **Placement matters:** after the persona, so they read as overriding rules rather than buried in it, and on every node, because Flows replaces the role message on each transition.
+- **An invented answer is as harmful as a leak.** Agents can't see other patients' records, so the privacy risk is the model making up "yes, he's booked for Tuesday". The rule targets that.
 
 **Alternatives considered.**
 - **Keep it in ProsperO's personas only.** Rejected: that's what failed. Hand-made and edited agents lose it.
@@ -608,14 +612,15 @@ ProsperO's prompt no longer asks the persona to say it; it only tells ProsperO n
 - **An output filter between the LLM and the voice** (patterns such as doses or drug names). Deferred: it's brittle on paraphrases, adds latency to every reply, and false positives cut off legitimate sentences. Worth adding if recorded calls show the prompt rule isn't enough.
 - **A validation rule that requires the persona to mention it.** Rejected: checking wording is fragile, and it puts the burden on every author instead of the runtime.
 
-**Cost of reversal.** Low. It's one constant and one line in the builder.
+**Cost of reversal.** Low. Each rule is one constant, and the builder adds them in one line.
 
 **Likely challenges.**
 - *"A prompt can still be jailbroken."* Yes. This is the first layer; it fixes the common case (an agent that was never told). Regression tests, which always check for advice (D-18), and a future output check are the next layers.
 - *"Some clinics want to share opening hours, prep instructions, or 'bring your insurance card'."* That's not medical advice, and the rule doesn't forbid it. Pre-visit instructions a clinic writes in a node are its own content, not the agent's judgement.
 - *"Why not let the LLM decide what counts as advice?"* It does, inside the rule. The runtime only guarantees the rule is there.
+- *"A parent needs to reschedule their child's appointment."* The privacy rule blocks discussing someone else's existing appointment, so that case needs an agent designed for it, with identity checks for the guardian. It's deliberately strict until a clinic needs it.
 
-**Revisit when** recorded calls show advice getting through (add the output check), or the product covers triage.
+**Revisit when** recorded calls show advice or privacy slips getting through (add the output check), the product covers triage, or agents serve guardians and carers.
 
 ---
 

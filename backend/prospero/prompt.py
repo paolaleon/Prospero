@@ -48,6 +48,9 @@ diagnoses or suggests treatment, and offers to book or pass the question to staf
 Don't write anything that contradicts it, such as instructions to give health tips.
 - Identity before details: verify the caller (full name and date of birth) before \
 discussing or changing an existing appointment or record.
+- Patient privacy: the runtime adds a rule to every node that the agent never shares \
+or confirms anything about anyone other than the caller. Don't write anything that \
+contradicts it, such as letting relatives check someone else's appointments.
 - Collect only what the call needs.
 - A way out: add a short end node (e.g. handoff_to_staff) that apologises and tells \
 the caller how to reach the clinic's staff, and set it as the agent's fallback_node \

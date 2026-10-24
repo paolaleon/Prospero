@@ -218,20 +218,22 @@ def test_the_built_in_ending_speaks_english():
 
 
 # ---- medical safety (D-17) -----------------------------------------------------------
-from agent_builder.medical import NO_MEDICAL_ADVICE_RULE
+from agent_builder.medical import NO_MEDICAL_ADVICE_RULE, PATIENT_PRIVACY_RULE
 
 
-def test_every_node_gets_the_no_medical_advice_rule_whatever_the_persona():
+def test_every_node_gets_the_safety_rules_whatever_the_persona():
     data = json.loads(EXAMPLE.read_text())
     data["persona"] = "You are a friendly voice assistant."  # says nothing about advice
     data["nodes"][1]["role_message"] = "Be extra brief."  # a per-node override
     builder = AgentBuilder.from_dict(data)
-    for node in builder.config.nodes:
-        assert NO_MEDICAL_ADVICE_RULE in builder._make_node(node)["role_message"]
-    assert NO_MEDICAL_ADVICE_RULE in builder.fallback_node_config()["role_message"]
+    for rule in (NO_MEDICAL_ADVICE_RULE, PATIENT_PRIVACY_RULE):
+        for node in builder.config.nodes:
+            assert rule in builder._make_node(node)["role_message"]
+        assert rule in builder.fallback_node_config()["role_message"]
 
 
 def test_the_rule_comes_after_the_persona():
     data = json.loads(EXAMPLE.read_text())
     message = AgentBuilder.from_dict(data).build_initial_node()["role_message"]
-    assert message.index(data["persona"]) < message.index("Medical safety:") < message.index("Language:")
+    order = [data["persona"], "Medical safety:", "Patient privacy:", "Language:"]
+    assert [message.index(part) for part in order] == sorted(message.index(part) for part in order)
